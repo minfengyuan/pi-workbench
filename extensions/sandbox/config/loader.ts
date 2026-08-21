@@ -3,14 +3,16 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { DEFAULT_CONFIG } from "./defaults.ts";
-import type { SandboxConfig, SandboxMode } from "../types.ts";
+import type { CacheConfig, SandboxConfig, SandboxMode } from "../types.ts";
 
 interface PartialConfig {
 	mode?: unknown;
 	workspaceRoot?: unknown;
+	cacheRoot?: unknown;
 	network?: { allow?: unknown };
 	environment?: { allow?: unknown };
 	filesystem?: { denyRead?: unknown };
+	cache?: Partial<Record<keyof CacheConfig, unknown>>;
 }
 
 async function readConfig(path: string): Promise<PartialConfig | undefined> {
@@ -36,6 +38,19 @@ function normalizeMode(value: unknown): SandboxMode | undefined {
 	return value;
 }
 
+function cacheConfig(global: PartialConfig | undefined, project: PartialConfig | undefined): CacheConfig {
+	const result = { ...DEFAULT_CONFIG.cache };
+	for (const name of Object.keys(result) as Array<keyof CacheConfig>) {
+		const globalValue = global?.cache?.[name];
+		const projectValue = project?.cache?.[name];
+		if (globalValue !== undefined && typeof globalValue !== "boolean") throw new Error(`cache.${name} must be a boolean`);
+		if (projectValue !== undefined && typeof projectValue !== "boolean") throw new Error(`cache.${name} must be a boolean`);
+		const globallyAllowed = globalValue ?? result[name];
+		result[name] = projectValue === undefined ? globallyAllowed : globallyAllowed && projectValue;
+	}
+	return result;
+}
+
 export function mergeConfig(global: PartialConfig | undefined, project: PartialConfig | undefined): SandboxConfig {
 	const globalAllow = strings(global?.network?.allow, "network.allow") ?? DEFAULT_CONFIG.network.allow;
 	const projectAllow = strings(project?.network?.allow, "network.allow");
@@ -52,9 +67,11 @@ export function mergeConfig(global: PartialConfig | undefined, project: PartialC
 	return {
 		mode: normalizeMode(global?.mode) ?? DEFAULT_CONFIG.mode,
 		workspaceRoot: typeof global?.workspaceRoot === "string" ? global.workspaceRoot : DEFAULT_CONFIG.workspaceRoot,
+		cacheRoot: typeof global?.cacheRoot === "string" ? global.cacheRoot : DEFAULT_CONFIG.cacheRoot,
 		network: { allow: effectiveAllow },
 		environment: { allow: effectiveEnv },
 		filesystem: { denyRead },
+		cache: cacheConfig(global, project),
 	};
 }
 

@@ -1,18 +1,34 @@
 import { execFile } from "node:child_process";
-import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { isDeniedSnapshotPath } from "../policy/filesystem.ts";
 import type { WorkspaceSnapshot } from "../types.ts";
 
 const execFileAsync = promisify(execFile);
+const LEASE_FILE = ".pi-sandbox-lease.json";
+const SAFE_CONFIG_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+
+interface WorkspaceLease {
+	version: 1;
+	ownerPid: number;
+	createdAt: number;
+}
 
 async function git(cwd: string, args: string[], encoding: BufferEncoding | "buffer" = "utf8"): Promise<string | Buffer> {
-	const result = await execFileAsync("git", args, {
+	const result = await execFileAsync("git", [...SAFE_CONFIG_ARGS, ...args], {
 		cwd,
 		encoding: encoding === "buffer" ? "buffer" : encoding,
 		maxBuffer: 100 * 1024 * 1024,
-		env: { PATH: process.env.PATH, LANG: "C", LC_ALL: "C" },
+		env: {
+			PATH: process.env.PATH,
+			LANG: "C",
+			LC_ALL: "C",
+			HOME: "/nonexistent",
+			GIT_CONFIG_NOSYSTEM: "1",
+			GIT_CONFIG_GLOBAL: "/dev/null",
+			GIT_TERMINAL_PROMPT: "0",
+		},
 	});
 	return result.stdout;
 }
@@ -38,6 +54,39 @@ async function canonicalPath(value: string): Promise<string> {
 	}
 }
 
+function isProcessAlive(pid: number): boolean {
+	if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+export async function gcStaleWorkspaces(workspaceRoot: string): Promise<number> {
+	const root = await canonicalPath(workspaceRoot);
+	await mkdir(root, { recursive: true, mode: 0o700 });
+	let removed = 0;
+	for (const entry of await readdir(root, { withFileTypes: true })) {
+		if (!entry.isDirectory() || entry.isSymbolicLink() || !entry.name.startsWith("session-")) continue;
+		const directory = join(root, entry.name);
+		const leasePath = join(directory, LEASE_FILE);
+		try {
+			const stat = await lstat(leasePath);
+			if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4096) continue;
+			const lease = JSON.parse(await readFile(leasePath, "utf8")) as Partial<WorkspaceLease>;
+			if (lease.version !== 1 || typeof lease.createdAt !== "number" || typeof lease.ownerPid !== "number") continue;
+			if (isProcessAlive(lease.ownerPid)) continue;
+			await rm(directory, { recursive: true, force: true });
+			removed++;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") continue;
+		}
+	}
+	return removed;
+}
+
 export async function createWorkspace(
 	cwd: string,
 	workspaceRoot: string,
@@ -50,7 +99,10 @@ export async function createWorkspace(
 	}
 	const baseCommit = (await git(hostSource, ["rev-parse", "HEAD"]) as string).trim();
 	await mkdir(resolvedWorkspaceRoot, { recursive: true, mode: 0o700 });
+	await gcStaleWorkspaces(resolvedWorkspaceRoot);
 	const sessionPath = await mkdtemp(join(resolvedWorkspaceRoot, "session-"));
+	const lease: WorkspaceLease = { version: 1, ownerPid: process.pid, createdAt: Date.now() };
+	await writeFile(join(sessionPath, LEASE_FILE), `${JSON.stringify(lease)}\n`, { mode: 0o600 });
 	const workspacePath = join(sessionPath, "repo");
 	const baselinePath = join(sessionPath, "baseline");
 
@@ -58,7 +110,7 @@ export async function createWorkspace(
 		await git(hostSource, ["clone", "--no-hardlinks", "--no-checkout", "--", hostSource, workspacePath]);
 		await git(workspacePath, ["checkout", "--detach", baseCommit]);
 
-		const patch = await git(hostSource, ["diff", "--binary", "HEAD"], "buffer") as Buffer;
+		const patch = await git(hostSource, ["diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD"], "buffer") as Buffer;
 		if (patch.length > 0) {
 			const patchPath = join(workspacePath, ".git", "pi-snapshot.patch");
 			await writeFile(patchPath, patch, { mode: 0o600 });
@@ -92,8 +144,13 @@ export async function createWorkspace(
 			copied++;
 		}
 
-		const changedRaw = await git(hostSource, ["diff", "--name-only", "HEAD", "-z"], "buffer") as Buffer;
+		const changedRaw = await git(hostSource, ["diff", "--name-only", "--no-ext-diff", "--no-textconv", "HEAD", "-z"], "buffer") as Buffer;
 		const changed = changedRaw.toString("utf8").split("\0").filter(Boolean).length;
+
+		// The temporary clone is used only to assemble the launch snapshot. Never
+		// expose its object database: denied files may still exist in Git history.
+		await rm(join(workspacePath, ".git"), { recursive: true, force: true });
+		await git(workspacePath, ["init", "-q"]);
 		await git(workspacePath, ["add", "-A"]);
 		await git(workspacePath, [
 			"-c", "user.name=Pi Sandbox",

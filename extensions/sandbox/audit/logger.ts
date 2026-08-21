@@ -11,7 +11,11 @@ export interface AuditEvent {
 }
 
 export class AuditLogger {
-	constructor(private readonly root = join(homedir(), ".pi", "agent", "sandbox-logs")) {}
+	private readonly root: string;
+
+	constructor(root = join(homedir(), ".pi", "agent", "sandbox-logs")) {
+		this.root = root;
+	}
 
 	async write(event: AuditEvent): Promise<void> {
 		await mkdir(this.root, { recursive: true, mode: 0o700 });

@@ -14,6 +14,7 @@ import {
 import { Type } from "typebox";
 import { AuditLogger } from "./audit/logger.ts";
 import { GondolinBackend } from "./backend/gondolin.ts";
+import { buildCacheEnv } from "./cache/manager.ts";
 import { loadConfig } from "./config/loader.ts";
 import { buildGuestEnv } from "./policy/environment.ts";
 import { classifyTool } from "./policy/tools.ts";
@@ -68,7 +69,8 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 			ctx.ui.setStatus("sandbox", undefined);
 			return;
 		}
-		const lifecycle = state.status === "ready" ? "clone | net:restricted | host-write:off" : `${state.status} | host-write:off`;
+		const web = state.webUrl ? ` | web:${state.webUrl}` : "";
+		const lifecycle = state.status === "ready" ? `clone | net:restricted | host-write:off${web}` : `${state.status} | host-write:off`;
 		ctx.ui.setStatus("sandbox", ctx.ui.theme.fg(state.status === "error" ? "error" : "accent", `🔒 dev | ${lifecycle}`));
 	}
 
@@ -100,7 +102,7 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 			finally { await destroyWorkspace(active.snapshot); }
 		}
 		if (devMode) {
-			state = { ...state, status: "destroyed", instanceId: undefined, workspace: undefined };
+			state = { ...state, status: "destroyed", instanceId: undefined, workspace: undefined, webUrl: undefined };
 			pi.setActiveTools(["sandbox_status"]);
 			if (ctx) statusLine(ctx);
 		}
@@ -143,7 +145,7 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 			const active = requireRuntime();
 			if (FORBIDDEN_REMOTE_MUTATION.test(params.command)) throw new Error("Sandbox policy denies remote mutation");
 			const vm = await active.backend.start();
-			const env = buildGuestEnv(process.env, active.config.environment.allow);
+			const env = { ...buildGuestEnv(process.env, active.config.environment.allow), ...buildCacheEnv(active.config.cache) };
 			return createBashTool(GUEST_WORKSPACE, {
 				exposeSessionEnvironment: false,
 				operations: createGondolinBashOps(vm, active.snapshot.hostSource, active.backend.shellPath, env),
@@ -190,6 +192,7 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 					dirty: state.workspace.dirty,
 					files: state.workspace.files,
 				},
+				webUrl: state.webUrl,
 				error: state.error,
 			};
 			return { content: [{ type: "text", text: JSON.stringify(publicState, null, 2) }], details: publicState };
@@ -256,7 +259,12 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 				return { result: { output: "Sandbox policy denies remote mutation", exitCode: 126, cancelled: false, truncated: false } };
 			}
 			const vm = await active.backend.start();
-			return { operations: createGondolinBashOps(vm, active.snapshot.hostSource, active.backend.shellPath, buildGuestEnv(process.env, active.config.environment.allow)) };
+			return {
+				operations: createGondolinBashOps(vm, active.snapshot.hostSource, active.backend.shellPath, {
+					...buildGuestEnv(process.env, active.config.environment.allow),
+					...buildCacheEnv(active.config.cache),
+				}),
+			};
 		} catch (error) {
 			return {
 				result: {
@@ -278,16 +286,26 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("sandbox", {
-		description: "Sandbox status, tools, diff, apply, or destroy",
-		getArgumentCompletions: (prefix) => ["status", "tools", "diff", "apply", "destroy"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
+		description: "Sandbox status, tools, processes, serve, diff, apply, or destroy",
+		getArgumentCompletions: (prefix) => ["status", "tools", "processes", "serve", "diff", "apply", "destroy"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
-			const action = args.trim() || "status";
+			const [action = "status", ...actionArgs] = args.trim().split(/\s+/).filter(Boolean);
 			if (action === "status") { ctx.ui.notify(JSON.stringify(state, null, 2), "info"); return; }
 			if (action === "tools") {
 				ctx.ui.notify(`Active: ${pi.getActiveTools().join(", ") || "none"}\nBlocked: ${state.blockedTools.join(", ") || "none"}`, "info"); return;
 			}
 			if (action === "destroy") { await destroy(ctx); ctx.ui.notify("Sandbox destroyed", "info"); return; }
 			const active = requireRuntime();
+			if (action === "processes") {
+				ctx.ui.notify((await active.backend.listProcesses()) || "No sandbox processes", "info"); return;
+			}
+			if (action === "serve") {
+				const port = Number(actionArgs[0]);
+				const webUrl = await active.backend.serve(port);
+				state = { ...state, webUrl };
+				statusLine(ctx);
+				ctx.ui.notify(`Sandbox web server: ${webUrl}`, "info"); return;
+			}
 			const patch = await exportPatch(active.snapshot);
 			if (action === "diff") {
 				const text = patch.length === 0 ? "No sandbox changes" : truncateHead(patch.toString("utf8")).content;

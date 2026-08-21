@@ -1,7 +1,8 @@
 import path from "node:path";
-import { createHttpHooks, RealFSProvider, VM } from "@earendil-works/gondolin";
+import { createHttpHooks, RealFSProvider, VM, type IngressAccess } from "@earendil-works/gondolin";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AuditLogger } from "../audit/logger.ts";
+import { buildCacheEnv, prepareCacheDirectories } from "../cache/manager.ts";
 import { buildGuestEnv } from "../policy/environment.ts";
 import { isAllowedNetworkRequest } from "../policy/network.ts";
 import type { SandboxConfig, WorkspaceSnapshot } from "../types.ts";
@@ -10,20 +11,40 @@ import { GUEST_WORKSPACE } from "../tools/gondolin-operations.ts";
 export class GondolinBackend {
 	private vm?: VM;
 	private starting?: Promise<VM>;
+	private ingress?: IngressAccess;
+	private ingressStarting?: Promise<IngressAccess>;
+	private destroyed = false;
+	private readonly config: SandboxConfig;
+	private readonly snapshot: WorkspaceSnapshot;
+	private readonly audit: AuditLogger;
+	private readonly sessionId: string;
+	private readonly createVm: typeof VM.create;
 	shellPath = "/bin/sh";
 
 	constructor(
-		private readonly config: SandboxConfig,
-		private readonly snapshot: WorkspaceSnapshot,
-		private readonly audit: AuditLogger,
-		private readonly sessionId: string,
-	) {}
+		config: SandboxConfig,
+		snapshot: WorkspaceSnapshot,
+		audit: AuditLogger,
+		sessionId: string,
+		createVm: typeof VM.create = VM.create,
+	) {
+		this.config = config;
+		this.snapshot = snapshot;
+		this.audit = audit;
+		this.sessionId = sessionId;
+		this.createVm = createVm;
+	}
 
 	async start(ctx?: ExtensionContext): Promise<VM> {
+		if (this.destroyed) throw new Error("Sandbox backend has been destroyed");
 		if (this.vm) return this.vm;
 		if (this.starting) return this.starting;
-		this.starting = this.create(ctx).finally(() => { this.starting = undefined; });
-		return this.starting;
+		const starting = this.create(ctx);
+		this.starting = starting;
+		void starting.finally(() => {
+			if (this.starting === starting) this.starting = undefined;
+		}).catch(() => {});
+		return starting;
 	}
 
 	private async create(ctx?: ExtensionContext): Promise<VM> {
@@ -43,28 +64,37 @@ export class GondolinBackend {
 				await this.audit.write({ session: this.sessionId, event: "network.request", decision: "allow", resource: request.url });
 			},
 		});
-		const created = await VM.create({
+		const cacheDirectories = await prepareCacheDirectories(this.config.cacheRoot, this.config.cache, this.snapshot.hostSource);
+		if (this.destroyed) throw new Error("Sandbox backend was destroyed during startup");
+		const mounts = Object.fromEntries([
+			[GUEST_WORKSPACE, new RealFSProvider(this.snapshot.path)],
+			...Object.entries(cacheDirectories).map(([guestPath, hostPath]) => [guestPath, new RealFSProvider(hostPath)]),
+		]);
+		const created = await this.createVm({
 			sessionLabel: `pi-sandbox ${path.basename(this.snapshot.hostSource)}`,
 			httpHooks,
-			env: buildGuestEnv(process.env, this.config.environment.allow),
+			env: { ...buildGuestEnv(process.env, this.config.environment.allow), ...buildCacheEnv(this.config.cache) },
 			allowWebSockets: false,
-			vfs: {
-				mounts: { [GUEST_WORKSPACE]: new RealFSProvider(this.snapshot.path) },
-			},
+			vfs: { mounts },
 		});
 		try {
+			if (this.destroyed) throw new Error("Sandbox backend was destroyed during startup");
 			const gitProbe = await created.exec(["/bin/sh", "-lc", "command -v git >/dev/null || /sbin/apk add --no-cache git"]);
+			if (this.destroyed) throw new Error("Sandbox backend was destroyed during startup");
 			if (gitProbe.exitCode !== 0) {
 				throw new Error(`Failed to provision guest Git: ${gitProbe.stderr.trim() || `exit ${gitProbe.exitCode}`}`);
 			}
 			const gitTrust = await created.exec(["/usr/bin/git", "config", "--global", "--add", "safe.directory", GUEST_WORKSPACE]);
+			if (this.destroyed) throw new Error("Sandbox backend was destroyed during startup");
 			if (gitTrust.exitCode !== 0) {
 				throw new Error(`Failed to configure guest Git workspace: ${gitTrust.stderr.trim() || `exit ${gitTrust.exitCode}`}`);
 			}
 			const probe = await created.exec(["/bin/sh", "-lc", "command -v bash || true"]);
+			if (this.destroyed) throw new Error("Sandbox backend was destroyed during startup");
 			this.shellPath = probe.stdout.trim() || "/bin/sh";
-			this.vm = created;
 			await this.audit.write({ session: this.sessionId, event: "sandbox.started", details: { instanceId: created.id } });
+			if (this.destroyed) throw new Error("Sandbox backend was destroyed during startup");
+			this.vm = created;
 			return created;
 		} catch (error) {
 			await created.close();
@@ -74,11 +104,61 @@ export class GondolinBackend {
 
 	get instance(): VM | undefined { return this.vm; }
 
+	async listProcesses(): Promise<string> {
+		const active = await this.start();
+		const result = await active.exec(["/bin/sh", "-lc", "ps -o pid,ppid,stat,args"]);
+		if (result.exitCode !== 0) throw new Error(result.stderr.trim() || "Failed to list sandbox processes");
+		return result.stdout.trim();
+	}
+
+	async serve(guestPort: number): Promise<string> {
+		if (!Number.isSafeInteger(guestPort) || guestPort < 1 || guestPort > 65535) throw new Error("Guest port must be between 1 and 65535");
+		const active = await this.start();
+		if (this.destroyed) throw new Error("Sandbox backend has been destroyed");
+		active.setIngressRoutes([{ prefix: "/", port: guestPort, stripPrefix: false }]);
+		if (!this.ingress && !this.ingressStarting) {
+			const starting = active.enableIngress({ listenHost: "127.0.0.1", listenPort: 0, allowWebSockets: true }).then(async (access) => {
+				if (this.destroyed) {
+					await access.close();
+					throw new Error("Sandbox backend was destroyed during ingress startup");
+				}
+				this.ingress = access;
+				return access;
+			});
+			this.ingressStarting = starting;
+			void starting.finally(() => {
+				if (this.ingressStarting === starting) this.ingressStarting = undefined;
+			}).catch(() => {});
+		}
+		const ingress = this.ingress ?? await this.ingressStarting!;
+		if (this.destroyed) throw new Error("Sandbox backend has been destroyed");
+		await this.audit.write({ session: this.sessionId, event: "network.ingress", decision: "allow", resource: `127.0.0.1:${ingress.port}->${guestPort}` });
+		return ingress.url;
+	}
+
 	async destroy(): Promise<void> {
+		if (this.destroyed) return;
+		this.destroyed = true;
+		const starting = this.starting;
+		if (starting) {
+			try { await starting; } catch { /* startup closes a partially-created VM */ }
+		}
+		const ingressStarting = this.ingressStarting;
+		if (ingressStarting) {
+			try { await ingressStarting; } catch { /* late ingress closes itself */ }
+		}
+		const ingress = this.ingress;
+		this.ingress = undefined;
 		const active = this.vm;
 		this.vm = undefined;
-		this.starting = undefined;
-		if (active) await active.close();
-		await this.audit.write({ session: this.sessionId, event: "sandbox.destroyed" });
+		try {
+			if (ingress) await ingress.close();
+		} finally {
+			try {
+				if (active) await active.close();
+			} finally {
+				await this.audit.write({ session: this.sessionId, event: "sandbox.destroyed" });
+			}
+		}
 	}
 }

@@ -5,6 +5,7 @@ import type { SandboxConfig } from "../types.ts";
 export const DEFAULT_CONFIG: SandboxConfig = {
 	mode: "dev",
 	workspaceRoot: join(homedir(), ".cache", "pi-sandbox", "workspaces"),
+	cacheRoot: join(homedir(), ".cache", "pi-sandbox", "cache"),
 	network: {
 		allow: [
 			"registry.npmjs.org",
@@ -24,4 +25,5 @@ export const DEFAULT_CONFIG: SandboxConfig = {
 	},
 	environment: { allow: ["LANG", "LC_ALL", "TERM", "CI", "NODE_ENV"] },
 	filesystem: { denyRead: ["**/.env", "**/.env.*", "**/*.pem", "**/*.key"] },
+	cache: { npm: true, pnpm: true, pip: true, cargo: true, go: true },
 };

@@ -1,11 +1,21 @@
 export type SandboxMode = "dev" | "off";
 
+export interface CacheConfig {
+	npm: boolean;
+	pnpm: boolean;
+	pip: boolean;
+	cargo: boolean;
+	go: boolean;
+}
+
 export interface SandboxConfig {
 	mode: SandboxMode;
 	workspaceRoot: string;
+	cacheRoot: string;
 	network: { allow: string[] };
 	environment: { allow: string[] };
 	filesystem: { denyRead: string[] };
+	cache: CacheConfig;
 }
 
 export interface WorkspaceSnapshot {
@@ -24,5 +34,6 @@ export interface SandboxState {
 	instanceId?: string;
 	workspace?: WorkspaceSnapshot;
 	blockedTools: string[];
+	webUrl?: string;
 	error?: string;
 }

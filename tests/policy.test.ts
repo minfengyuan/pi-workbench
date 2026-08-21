@@ -6,6 +6,7 @@ import { buildGuestEnv, isSensitiveEnvironmentName } from "../extensions/sandbox
 import { isDeniedSnapshotPath } from "../extensions/sandbox/policy/filesystem.ts";
 import { classifyTool, filterActiveTools } from "../extensions/sandbox/policy/tools.ts";
 import { isAllowedNetworkRequest } from "../extensions/sandbox/policy/network.ts";
+import { buildCacheEnv } from "../extensions/sandbox/cache/manager.ts";
 
 test("guest environment is allowlisted with a sensitive-name deny layer", () => {
 	const env = buildGuestEnv({ LANG: "en_US.UTF-8", CI: "1", GITHUB_TOKEN: "secret", CUSTOM_KEY: "secret", HOME: "/host" }, ["LANG", "CI", "GITHUB_TOKEN", "CUSTOM_KEY", "HOME"]);
@@ -21,6 +22,21 @@ test("project config can only narrow global capabilities", () => {
 	);
 	assert.deepEqual(config.network.allow, ["github.com"]);
 	assert.deepEqual(config.environment.allow, ["LANG"]);
+});
+
+test("project config can disable but cannot enable shared caches", () => {
+	const config = mergeConfig(
+		{ cache: { npm: false, pip: true } },
+		{ cache: { npm: true, pip: false } },
+	);
+	assert.equal(config.cache.npm, false);
+	assert.equal(config.cache.pip, false);
+	assert.deepEqual(buildCacheEnv(config.cache), {
+		PNPM_HOME: "/cache/pnpm",
+		CARGO_HOME: "/cache/cargo",
+		GOCACHE: "/cache/go/build",
+		GOMODCACHE: "/cache/go/pkg/mod",
+	});
 });
 
 test("network policy allows only HTTPS reads and Git fetch", () => {

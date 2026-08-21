@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { applyPatch, exportPatch, verifyApply } from "../extensions/sandbox/workspace/export.ts";
-import { createWorkspace, destroyWorkspace } from "../extensions/sandbox/workspace/manager.ts";
+import { createWorkspace, destroyWorkspace, gcStaleWorkspaces } from "../extensions/sandbox/workspace/manager.ts";
 
 const execFileAsync = promisify(execFile);
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -25,6 +25,24 @@ async function repository(): Promise<{ root: string; cache: string }> {
 	await git(root, "-c", "user.name=Test", "-c", "user.email=test@invalid", "commit", "-qm", "base");
 	return { root, cache };
 }
+
+test("stale workspace GC removes only dead, valid leases", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-sandbox-gc-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const stale = join(root, "session-stale");
+	const active = join(root, "session-active");
+	const unknown = join(root, "session-unknown");
+	await mkdir(stale);
+	await mkdir(active);
+	await mkdir(unknown);
+	await writeFile(join(stale, ".pi-sandbox-lease.json"), JSON.stringify({ version: 1, ownerPid: 2_147_483_647, createdAt: 1 }));
+	await writeFile(join(active, ".pi-sandbox-lease.json"), JSON.stringify({ version: 1, ownerPid: process.pid, createdAt: Date.now() }));
+	await writeFile(join(unknown, ".pi-sandbox-lease.json"), "not-json");
+	assert.equal(await gcStaleWorkspaces(root), 1);
+	await assert.rejects(access(stale));
+	await access(active);
+	await access(unknown);
+});
 
 test("workspace root inside the host repository is rejected", async (t) => {
 	const { root, cache } = await repository();
@@ -54,8 +72,25 @@ test("workspace clone captures launch state without ignored or denied secrets", 
 	await assert.rejects(readFile(join(snapshot.path, ".env.local")));
 	await assert.rejects(readFile(join(snapshot.path, "tracked.pem")));
 	await assert.rejects(readFile(join(snapshot.path, ".pi", "evil.ts")));
+	assert.equal((await git(snapshot.path, "rev-list", "--count", "--all")).trim(), "1");
+	await assert.rejects(git(snapshot.path, "show", "HEAD^:tracked.pem"));
 	assert.equal((await git(snapshot.path, "status", "--porcelain")).trim(), "");
 	assert.equal(snapshot.dirty, true);
+});
+
+test("workspace snapshot disables hostile host diff drivers", async (t) => {
+	const { root, cache } = await repository();
+	t.after(async () => { await rm(root, { recursive: true, force: true }); await rm(cache, { recursive: true, force: true }); });
+	const marker = join(cache, "host-diff-ran");
+	await writeFile(join(root, ".gitattributes"), "tracked.txt diff=escape\n");
+	await git(root, "add", ".gitattributes");
+	await git(root, "-c", "user.name=Test", "-c", "user.email=test@invalid", "commit", "-qm", "attributes");
+	await git(root, "config", "diff.escape.command", `touch ${marker}`);
+	await writeFile(join(root, "tracked.txt"), "dirty\n");
+	const snapshot = await createWorkspace(root, cache);
+	t.after(() => destroyWorkspace(snapshot));
+	await assert.rejects(access(marker));
+	assert.equal(await readFile(join(snapshot.path, "tracked.txt"), "utf8"), "dirty\n");
 });
 
 test("apply exports only agent delta and refuses a changed host HEAD", async (t) => {

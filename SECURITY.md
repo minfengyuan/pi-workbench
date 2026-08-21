@@ -2,7 +2,7 @@
 
 `extensions/sandbox` is the security boundary for `--sandbox=dev`.
 
-The host Pi process retains provider authentication, sessions, and UI. Agent file and command tools are overridden and executed by `GondolinBackend` against a standalone disposable clone mounted at `/workspace`. The real checkout, host home, credential files, environment, SSH agent, and Docker socket are not mounted.
+The host Pi process retains provider authentication, sessions, and UI. Agent file and command tools are overridden and executed by `GondolinBackend` against a sanitized, single-commit disposable snapshot repository mounted at `/workspace`. The source clone metadata is removed before guest startup, so denied historical blobs are not exposed. The real checkout, host home, credential files, environment, SSH agent, and Docker socket are not mounted.
 
 Security invariants:
 
@@ -11,11 +11,13 @@ Security invariants:
 - guest environment is allowlisted, with a second sensitive-name deny layer;
 - outbound HTTPS on port 443 is restricted by Gondolin host patterns; internal IP ranges are denied and methods are read-only except Git fetch's `git-upload-pack` POST;
 - push, package publish, and other HTTP mutations are denied independently of command spelling;
-- Host patch export never opens Agent-controlled `.git` metadata; it compares a private baseline and a metadata-free workspace copy with Git `--no-index`, with system/global config and external diff drivers disabled;
+- Host snapshot/export Git operations disable system/global config, hooks, external diff, and textconv; export never opens Agent-controlled `.git` metadata;
+- persistent dependency caches use dedicated roots, reject canonical/symlinked roots, and are never executed by Host code;
+- optional dev-server ingress binds only to an ephemeral `127.0.0.1` port and is closed before VM teardown;
 - applying changes to the host is only available through `/sandbox apply`, after base verification, `git apply --check`, and user confirmation.
 
 The extension itself runs with host privileges and must be installed only from a trusted source. `--sandbox=off` intentionally provides no isolation.
 
 ## Not yet implemented
 
-Dynamic network grants, caches, dev-server port forwarding, secret brokers, cloud credentials, alternate backends, and crash-orphan GC are outside this MVP.
+Dynamic network grants, automatic dev-server detection, secret brokers, cloud credentials, and alternate backends are outside this MVP. Full real-VM adversarial coverage remains required before marking the sandbox stable.
