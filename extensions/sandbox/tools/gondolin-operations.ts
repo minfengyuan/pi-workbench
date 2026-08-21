@@ -45,12 +45,17 @@ function hostPathToGuest(localCwd: string, hostPath: string): string {
 
 function toGuestPath(localCwd: string, inputPath: string): string {
 	const trimmed = stripAtPrefix(inputPath.trim());
-	if (!trimmed) return GUEST_WORKSPACE;
-	if (path.isAbsolute(trimmed)) {
-		if (isInsideHostPath(localCwd, trimmed)) return hostPathToGuest(localCwd, trimmed);
-		return path.posix.resolve("/", toPosix(trimmed));
+	let guestPath: string;
+	if (!trimmed) guestPath = GUEST_WORKSPACE;
+	else if (path.isAbsolute(trimmed) && isInsideHostPath(localCwd, trimmed)) guestPath = hostPathToGuest(localCwd, trimmed);
+	else if (path.isAbsolute(trimmed)) guestPath = path.posix.resolve("/", toPosix(trimmed));
+	else guestPath = path.posix.resolve(GUEST_WORKSPACE, toPosix(trimmed));
+
+	const relativePath = path.posix.relative(GUEST_WORKSPACE, guestPath);
+	if (relativePath === ".." || relativePath.startsWith("../") || path.posix.isAbsolute(relativePath)) {
+		throw new Error(`Sandbox file tools deny paths outside ${GUEST_WORKSPACE}: ${inputPath}`);
 	}
-	return path.posix.resolve(GUEST_WORKSPACE, toPosix(trimmed));
+	return guestPath;
 }
 
 export function createGondolinReadOps(vm: VM, localCwd: string): ReadOperations {

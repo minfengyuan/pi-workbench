@@ -7,7 +7,16 @@ import { RealFSProvider, type VM } from "@earendil-works/gondolin";
 import { AuditLogger } from "../extensions/sandbox/audit/logger.ts";
 import { GondolinBackend } from "../extensions/sandbox/backend/gondolin.ts";
 import { prepareCacheDirectories } from "../extensions/sandbox/cache/manager.ts";
+import { createGondolinReadOps } from "../extensions/sandbox/tools/gondolin-operations.ts";
 import type { SandboxConfig, WorkspaceSnapshot } from "../extensions/sandbox/types.ts";
+
+test("audit logs rotate old daily files", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-sandbox-audit-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await writeFile(join(root, "2000-01-01.jsonl"), "old\n");
+	await new AuditLogger(root, 30).write({ session: "test", event: "sandbox.started" });
+	await assert.rejects(realpath(join(root, "2000-01-01.jsonl")));
+});
 
 test("cache directories reject canonical and symlink escapes", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-sandbox-cache-policy-"));
@@ -21,8 +30,9 @@ test("cache directories reject canonical and symlink escapes", async (t) => {
 	const mounts = await prepareCacheDirectories(safe, enabled, host);
 	const canonicalSafe = await realpath(safe);
 	assert.deepEqual(mounts, { "/cache/npm": join(canonicalSafe, "npm") });
-	await assert.rejects(prepareCacheDirectories(join(host, "cache"), enabled, host), /must be outside/);
-	await assert.rejects(prepareCacheDirectories(linked, enabled, host), /must be outside|Unsafe/);
+	await assert.rejects(prepareCacheDirectories(join(host, "cache"), enabled, host), /must not overlap/);
+	await assert.rejects(prepareCacheDirectories(root, enabled, host), /must not overlap/);
+	await assert.rejects(prepareCacheDirectories(linked, enabled, host), /must not overlap|Unsafe/);
 
 	const outside = join(root, "outside.txt");
 	const nestedLink = join(safe, "npm", "escape");
@@ -31,6 +41,20 @@ test("cache directories reject canonical and symlink escapes", async (t) => {
 	const provider = new RealFSProvider(join(safe, "npm"));
 	await assert.rejects(provider.open("/escape", "r"));
 	await assert.rejects(provider.open("/escape", "w"));
+});
+
+test("file operations reject paths outside the guest workspace", async () => {
+	let readPath = "";
+	const vm = {
+		fs: {
+			readFile: async (path: string) => { readPath = path; return Buffer.from("ok"); },
+		},
+	} as unknown as VM;
+	const operations = createGondolinReadOps(vm, "/host/repo");
+	await operations.readFile("/host/repo/src/index.ts");
+	assert.equal(readPath, "/workspace/src/index.ts");
+	await assert.rejects(operations.readFile("../../etc/passwd"), /outside \/workspace/);
+	await assert.rejects(operations.readFile("/etc/passwd"), /outside \/workspace/);
 });
 
 test("concurrent ingress startup is single-flight and teardown closes a late listener", async (t) => {
@@ -46,7 +70,7 @@ test("concurrent ingress startup is single-flight and teardown closes a late lis
 	};
 	const snapshot: WorkspaceSnapshot = {
 		hostSource: host, path: workspace, baselinePath: join(root, "baseline"), baseCommit: "base",
-		snapshotCommit: "snapshot", dirty: false, files: 0, createdAt: Date.now(),
+		snapshotCommit: "snapshot", remoteUrl: "https://github.com/org/repo.git", dirty: false, files: 0, createdAt: Date.now(),
 	};
 	let releaseIngress!: (value: { host: string; port: number; url: string; close(): Promise<void> }) => void;
 	let ingressStarted!: () => void;
@@ -54,9 +78,13 @@ test("concurrent ingress startup is single-flight and teardown closes a late lis
 	let ingressCreates = 0;
 	let ingressCloses = 0;
 	let vmCloses = 0;
+	const commands: string[][] = [];
 	const fakeVm = {
 		id: "vm",
-		exec: (command: string[]) => Promise.resolve({ exitCode: 0, stdout: command.includes("bash") ? "/bin/bash\n" : "", stderr: "" }),
+		exec: (command: string[]) => {
+			commands.push(command);
+			return Promise.resolve({ exitCode: 0, stdout: command.includes("bash") ? "/bin/bash\n" : "", stderr: "" });
+		},
 		setIngressRoutes: () => {},
 		enableIngress: () => {
 			ingressCreates++;
@@ -67,12 +95,16 @@ test("concurrent ingress startup is single-flight and teardown closes a late lis
 	} as unknown as VM;
 	const backend = new GondolinBackend(config, snapshot, new AuditLogger(join(root, "logs")), "test", (async () => fakeVm) as typeof VM.create);
 	await backend.start();
+	assert.equal(commands.some((command) => command.join(" ").includes("user.name Pi Sandbox")), true);
+	assert.equal(commands.some((command) => command.join(" ").includes("user.email pi-sandbox@invalid")), true);
+	assert.equal(commands.some((command) => command.join(" ").includes("commit.gpgSign false")), true);
+	assert.equal(commands.some((command) => command.join(" ").includes("remote add origin https://github.com/org/repo.git")), true);
 	const first = assert.rejects(backend.serve(3000), /destroyed during ingress startup/);
-	const second = assert.rejects(backend.serve(4000), /destroyed during ingress startup/);
 	await started;
+	await assert.rejects(backend.serve(4000), /already forwards guest port 3000/);
 	const destroy = backend.destroy();
 	releaseIngress({ host: "127.0.0.1", port: 43127, url: "http://127.0.0.1:43127", close: async () => { ingressCloses++; } });
-	await Promise.all([first, second, destroy]);
+	await Promise.all([first, destroy]);
 	assert.equal(ingressCreates, 1);
 	assert.equal(ingressCloses, 1);
 	assert.equal(vmCloses, 1);

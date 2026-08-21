@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { parse } from "yaml";
 import { DEFAULT_CONFIG } from "./defaults.ts";
 import type { CacheConfig, SandboxConfig, SandboxMode } from "../types.ts";
@@ -24,6 +24,29 @@ async function readConfig(path: string): Promise<PartialConfig | undefined> {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw new Error(`Invalid sandbox config ${path}: ${(error as Error).message}`);
 	}
+}
+
+function mapping(value: unknown, field: string): void {
+	if (value !== undefined && (value === null || typeof value !== "object" || Array.isArray(value))) {
+		throw new Error(`${field} must be a mapping`);
+	}
+}
+
+function pathValue(value: unknown, field: string): string | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string" || value.trim() === "") throw new Error(`${field} must be a non-empty string`);
+	return value;
+}
+
+function validateConfig(config: PartialConfig | undefined): void {
+	if (!config) return;
+	mapping(config.network, "network");
+	mapping(config.environment, "environment");
+	mapping(config.filesystem, "filesystem");
+	mapping(config.cache, "cache");
+	pathValue(config.workspaceRoot, "workspaceRoot");
+	pathValue(config.cacheRoot, "cacheRoot");
+	normalizeMode(config.mode);
 }
 
 function strings(value: unknown, field: string): string[] | undefined {
@@ -52,6 +75,8 @@ function cacheConfig(global: PartialConfig | undefined, project: PartialConfig |
 }
 
 export function mergeConfig(global: PartialConfig | undefined, project: PartialConfig | undefined): SandboxConfig {
+	validateConfig(global);
+	validateConfig(project);
 	const globalAllow = strings(global?.network?.allow, "network.allow") ?? DEFAULT_CONFIG.network.allow;
 	const projectAllow = strings(project?.network?.allow, "network.allow");
 	const effectiveAllow = projectAllow ? globalAllow.filter((host) => projectAllow.includes(host)) : globalAllow;
@@ -66,8 +91,8 @@ export function mergeConfig(global: PartialConfig | undefined, project: PartialC
 
 	return {
 		mode: normalizeMode(global?.mode) ?? DEFAULT_CONFIG.mode,
-		workspaceRoot: typeof global?.workspaceRoot === "string" ? global.workspaceRoot : DEFAULT_CONFIG.workspaceRoot,
-		cacheRoot: typeof global?.cacheRoot === "string" ? global.cacheRoot : DEFAULT_CONFIG.cacheRoot,
+		workspaceRoot: pathValue(global?.workspaceRoot, "workspaceRoot") ?? DEFAULT_CONFIG.workspaceRoot,
+		cacheRoot: pathValue(global?.cacheRoot, "cacheRoot") ?? DEFAULT_CONFIG.cacheRoot,
 		network: { allow: effectiveAllow },
 		environment: { allow: effectiveEnv },
 		filesystem: { denyRead },
@@ -75,8 +100,8 @@ export function mergeConfig(global: PartialConfig | undefined, project: PartialC
 	};
 }
 
-export async function loadConfig(cwd: string, projectTrusted: boolean): Promise<SandboxConfig> {
-	const globalConfig = await readConfig(join(homedir(), ".pi", "agent", "sandbox.yaml"));
-	const projectConfig = projectTrusted ? await readConfig(join(cwd, ".pi", "sandbox.yaml")) : undefined;
+export async function loadConfig(projectRoot: string, projectTrusted: boolean): Promise<SandboxConfig> {
+	const globalConfig = await readConfig(join(getAgentDir(), "sandbox.yaml"));
+	const projectConfig = projectTrusted ? await readConfig(join(projectRoot, CONFIG_DIR_NAME, "sandbox.yaml")) : undefined;
 	return mergeConfig(globalConfig, projectConfig);
 }

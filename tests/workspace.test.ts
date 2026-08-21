@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { applyPatch, exportPatch, verifyApply } from "../extensions/sandbox/workspace/export.ts";
-import { createWorkspace, destroyWorkspace, gcStaleWorkspaces } from "../extensions/sandbox/workspace/manager.ts";
+import { createWorkspace, destroyWorkspace, gcStaleWorkspaces, sanitizeRemoteUrl } from "../extensions/sandbox/workspace/manager.ts";
 
 const execFileAsync = promisify(execFile);
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -26,6 +26,13 @@ async function repository(): Promise<{ root: string; cache: string }> {
 	return { root, cache };
 }
 
+test("Git remotes are limited to credential-free HTTPS", () => {
+	assert.equal(sanitizeRemoteUrl("https://user:token@github.com/org/repo.git?secret=1#fragment"), "https://github.com/org/repo.git");
+	assert.equal(sanitizeRemoteUrl("https://github.com:8443/org/repo.git"), undefined);
+	assert.equal(sanitizeRemoteUrl("git@github.com:org/repo.git"), undefined);
+	assert.equal(sanitizeRemoteUrl("file:///host/repo"), undefined);
+});
+
 test("stale workspace GC removes only dead, valid leases", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-sandbox-gc-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
@@ -44,10 +51,11 @@ test("stale workspace GC removes only dead, valid leases", async (t) => {
 	await access(unknown);
 });
 
-test("workspace root inside the host repository is rejected", async (t) => {
+test("workspace root overlapping the host repository is rejected", async (t) => {
 	const { root, cache } = await repository();
 	t.after(async () => { await rm(root, { recursive: true, force: true }); await rm(cache, { recursive: true, force: true }); });
-	await assert.rejects(createWorkspace(root, join(root, ".sandbox-cache")), /must be outside/);
+	await assert.rejects(createWorkspace(root, join(root, ".sandbox-cache")), /must not overlap/);
+	await assert.rejects(createWorkspace(root, tmpdir()), /must not overlap/);
 });
 
 test("workspace clone captures launch state without ignored or denied secrets", async (t) => {

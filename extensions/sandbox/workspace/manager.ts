@@ -33,9 +33,35 @@ async function git(cwd: string, args: string[], encoding: BufferEncoding | "buff
 	return result.stdout;
 }
 
-function assertInside(root: string, target: string): void {
+export function sanitizeRemoteUrl(value: string): string | undefined {
+	try {
+		const url = new URL(value);
+		if (url.protocol !== "https:" || (url.port !== "" && url.port !== "443")) return undefined;
+		url.username = "";
+		url.password = "";
+		url.search = "";
+		url.hash = "";
+		return url.toString();
+	} catch {
+		return undefined;
+	}
+}
+
+async function readSanitizedOrigin(hostSource: string): Promise<string | undefined> {
+	try {
+		return sanitizeRemoteUrl((await git(hostSource, ["remote", "get-url", "origin"]) as string).trim());
+	} catch {
+		return undefined;
+	}
+}
+
+function isInside(root: string, target: string): boolean {
 	const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
-	if (target !== root && !target.startsWith(prefix)) throw new Error(`Snapshot path escapes repository: ${target}`);
+	return target === root || target.startsWith(prefix);
+}
+
+function assertInside(root: string, target: string): void {
+	if (!isInside(root, target)) throw new Error(`Snapshot path escapes repository: ${target}`);
 }
 
 export async function findGitRoot(cwd: string): Promise<string> {
@@ -94,10 +120,11 @@ export async function createWorkspace(
 ): Promise<WorkspaceSnapshot> {
 	const hostSource = await findGitRoot(cwd);
 	const resolvedWorkspaceRoot = await canonicalPath(workspaceRoot);
-	if (resolvedWorkspaceRoot === hostSource || resolvedWorkspaceRoot.startsWith(`${hostSource}${sep}`)) {
-		throw new Error("Sandbox workspace root must be outside the host repository");
+	if (isInside(hostSource, resolvedWorkspaceRoot) || isInside(resolvedWorkspaceRoot, hostSource)) {
+		throw new Error("Sandbox workspace root must not overlap the host repository");
 	}
 	const baseCommit = (await git(hostSource, ["rev-parse", "HEAD"]) as string).trim();
+	const remoteUrl = await readSanitizedOrigin(hostSource);
 	await mkdir(resolvedWorkspaceRoot, { recursive: true, mode: 0o700 });
 	await gcStaleWorkspaces(resolvedWorkspaceRoot);
 	const sessionPath = await mkdtemp(join(resolvedWorkspaceRoot, "session-"));
@@ -169,6 +196,7 @@ export async function createWorkspace(
 			baselinePath,
 			baseCommit,
 			snapshotCommit,
+			remoteUrl,
 			dirty: patch.length > 0 || copied > 0,
 			files: changed + copied,
 			createdAt: Date.now(),

@@ -16,6 +16,10 @@ function isInside(root: string, target: string): boolean {
 	return target === root || target.startsWith(`${root}${sep}`);
 }
 
+function pathsOverlap(left: string, right: string): boolean {
+	return isInside(left, right) || isInside(right, left);
+}
+
 export async function prepareCacheDirectories(
 	cacheRoot: string,
 	config: CacheConfig,
@@ -23,11 +27,11 @@ export async function prepareCacheDirectories(
 ): Promise<Record<string, string>> {
 	const absoluteRoot = resolve(cacheRoot);
 	const absoluteHost = await realpath(hostSource);
-	if (isInside(absoluteHost, absoluteRoot)) throw new Error("Sandbox cache root must be outside the host repository");
+	if (pathsOverlap(absoluteHost, absoluteRoot)) throw new Error("Sandbox cache root must not overlap the host repository");
 
 	await mkdir(absoluteRoot, { recursive: true, mode: 0o700 });
 	const canonicalRoot = await realpath(absoluteRoot);
-	if (isInside(absoluteHost, canonicalRoot)) throw new Error("Sandbox cache root must be outside the host repository");
+	if (pathsOverlap(absoluteHost, canonicalRoot)) throw new Error("Sandbox cache root must not overlap the host repository");
 	const rootStat = await lstat(absoluteRoot);
 	if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error(`Unsafe sandbox cache root: ${absoluteRoot}`);
 	const mounts: Record<string, string> = {};

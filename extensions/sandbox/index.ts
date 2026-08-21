@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { gcSessions } from "@earendil-works/gondolin";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createBashTool,
@@ -30,7 +31,7 @@ import {
 } from "./tools/gondolin-operations.ts";
 import type { SandboxConfig, SandboxState, WorkspaceSnapshot } from "./types.ts";
 import { applyPatch, exportPatch, verifyApply } from "./workspace/export.ts";
-import { createWorkspace, destroyWorkspace } from "./workspace/manager.ts";
+import { createWorkspace, destroyWorkspace, findGitRoot } from "./workspace/manager.ts";
 
 interface Runtime {
 	config: SandboxConfig;
@@ -212,8 +213,11 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 		state = { status: "starting", blockedTools: [] };
 		statusLine(ctx);
 		try {
-			const config = await loadConfig(ctx.cwd, ctx.isProjectTrusted());
-			const snapshot = await createWorkspace(ctx.cwd, config.workspaceRoot, config.filesystem.denyRead);
+			const staleSessions = await gcSessions();
+			if (staleSessions > 0) await audit.write({ session: "startup", event: "runtime.gc", details: { removed: staleSessions } });
+			const projectRoot = await findGitRoot(ctx.cwd);
+			const config = await loadConfig(projectRoot, ctx.isProjectTrusted());
+			const snapshot = await createWorkspace(projectRoot, config.workspaceRoot, config.filesystem.denyRead);
 			const sessionId = ctx.sessionManager.getSessionId();
 			const backend = new GondolinBackend(config, snapshot, audit, sessionId);
 			runtime = { config, snapshot, backend, sessionId };
@@ -247,8 +251,10 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 			return { block: true, reason: `Sandbox blocked unclassified tool: ${event.toolName}`, terminate: true };
 		}
 		if (event.toolName === "bash" && FORBIDDEN_REMOTE_MUTATION.test(String((event.input as { command?: unknown }).command ?? ""))) {
+			await audit.write({ session: runtime?.sessionId ?? "unknown", event: "tool.call", decision: "deny", resource: event.toolName });
 			return { block: true, reason: "Sandbox policy denies remote mutation", terminate: true };
 		}
+		await audit.write({ session: runtime?.sessionId ?? "unknown", event: "tool.call", decision: "allow", resource: event.toolName });
 	});
 
 	pi.on("user_bash", async (event) => {
@@ -256,8 +262,10 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 		try {
 			const active = requireRuntime();
 			if (FORBIDDEN_REMOTE_MUTATION.test(event.command)) {
+				await audit.write({ session: active.sessionId, event: "tool.call", decision: "deny", resource: "user_bash" });
 				return { result: { output: "Sandbox policy denies remote mutation", exitCode: 126, cancelled: false, truncated: false } };
 			}
+			await audit.write({ session: active.sessionId, event: "tool.call", decision: "allow", resource: "user_bash" });
 			const vm = await active.backend.start();
 			return {
 				operations: createGondolinBashOps(vm, active.snapshot.hostSource, active.backend.shellPath, {
@@ -277,17 +285,23 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		if (!devMode) return;
 		requireRuntime();
-		const localLine = `Current working directory: ${localCwd}`;
 		const guestLine = `Current working directory: ${GUEST_WORKSPACE} (isolated disposable clone; host-write disabled)`;
-		return { systemPrompt: event.systemPrompt.includes(localLine) ? event.systemPrompt.replace(localLine, guestLine) : `${event.systemPrompt}\n\n${guestLine}` };
+		const hostLines = new Set([
+			`Current working directory: ${ctx.cwd}`,
+			`Current working directory: ${localCwd}`,
+		]);
+		let systemPrompt = event.systemPrompt;
+		for (const hostLine of hostLines) systemPrompt = systemPrompt.replaceAll(hostLine, guestLine);
+		if (!systemPrompt.includes(guestLine)) systemPrompt += `\n\n${guestLine}`;
+		return { systemPrompt };
 	});
 
 	pi.registerCommand("sandbox", {
-		description: "Sandbox status, tools, processes, serve, diff, apply, or destroy",
-		getArgumentCompletions: (prefix) => ["status", "tools", "processes", "serve", "diff", "apply", "destroy"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
+		description: "Sandbox status, tools, files, network, processes, serve, reset, diff, apply, or destroy",
+		getArgumentCompletions: (prefix) => ["status", "tools", "files", "network", "processes", "serve", "reset", "diff", "apply", "destroy"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
 			const [action = "status", ...actionArgs] = args.trim().split(/\s+/).filter(Boolean);
 			if (action === "status") { ctx.ui.notify(JSON.stringify(state, null, 2), "info"); return; }
@@ -296,6 +310,12 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 			}
 			if (action === "destroy") { await destroy(ctx); ctx.ui.notify("Sandbox destroyed", "info"); return; }
 			const active = requireRuntime();
+			if (action === "files") {
+				ctx.ui.notify((await active.backend.listFiles()) || "No sandbox changes", "info"); return;
+			}
+			if (action === "network") {
+				ctx.ui.notify(`Default: deny\nAllowed HTTPS hosts:\n${active.config.network.allow.map((host) => `- ${host}`).join("\n") || "(none)"}`, "info"); return;
+			}
 			if (action === "processes") {
 				ctx.ui.notify((await active.backend.listProcesses()) || "No sandbox processes", "info"); return;
 			}
@@ -305,6 +325,14 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 				state = { ...state, webUrl };
 				statusLine(ctx);
 				ctx.ui.notify(`Sandbox web server: ${webUrl}`, "info"); return;
+			}
+			if (action === "reset") {
+				if (!ctx.hasUI || !(await ctx.ui.confirm("Reset sandbox?", "Discard every change in the disposable workspace?"))) {
+					ctx.ui.notify("Sandbox reset cancelled", "info"); return;
+				}
+				await active.backend.resetWorkspace(active.snapshot.snapshotCommit);
+				await audit.write({ session: active.sessionId, event: "workspace.reset", decision: "allow" });
+				ctx.ui.notify("Sandbox reset to launch snapshot", "info"); return;
 			}
 			const patch = await exportPatch(active.snapshot);
 			if (action === "diff") {

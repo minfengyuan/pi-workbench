@@ -5,7 +5,7 @@ import { mergeConfig } from "../extensions/sandbox/config/loader.ts";
 import { buildGuestEnv, isSensitiveEnvironmentName } from "../extensions/sandbox/policy/environment.ts";
 import { isDeniedSnapshotPath } from "../extensions/sandbox/policy/filesystem.ts";
 import { classifyTool, filterActiveTools } from "../extensions/sandbox/policy/tools.ts";
-import { isAllowedNetworkRequest } from "../extensions/sandbox/policy/network.ts";
+import { formatNetworkAuditResource, isAllowedNetworkRequest } from "../extensions/sandbox/policy/network.ts";
 import { buildCacheEnv } from "../extensions/sandbox/cache/manager.ts";
 
 test("guest environment is allowlisted with a sensitive-name deny layer", () => {
@@ -13,6 +13,16 @@ test("guest environment is allowlisted with a sensitive-name deny layer", () => 
 	assert.deepEqual(env, { LANG: "en_US.UTF-8", CI: "1" });
 	assert.equal(isSensitiveEnvironmentName("DB_PASSWORD"), true);
 	assert.equal(isSensitiveEnvironmentName("MONKEY"), false);
+});
+
+test("invalid policy shapes fail closed", () => {
+	for (const config of [
+		{ workspaceRoot: 42 },
+		{ cacheRoot: "" },
+		{ network: null },
+		{ environment: [] },
+		{ filesystem: "invalid" },
+	]) assert.throws(() => mergeConfig(config as never, undefined), /workspaceRoot|cacheRoot|network|environment|filesystem/);
 });
 
 test("project config can only narrow global capabilities", () => {
@@ -41,6 +51,10 @@ test("project config can disable but cannot enable shared caches", () => {
 
 test("network policy allows only HTTPS reads and Git fetch", () => {
 	assert.equal(DEFAULT_CONFIG.network.allow.includes("dl-cdn.alpinelinux.org"), true);
+	assert.equal(
+		formatNetworkAuditResource({ method: "GET", url: "https://user:secret@example.com/path?token=secret#value" }),
+		"GET https://example.com/path",
+	);
 	assert.equal(isAllowedNetworkRequest({ method: "GET", url: "https://registry.npmjs.org/pkg" }), true);
 	assert.equal(isAllowedNetworkRequest({ method: "POST", url: "https://github.com/org/repo.git/git-upload-pack" }), true);
 	for (const request of [

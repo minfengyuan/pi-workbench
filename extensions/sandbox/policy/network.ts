@@ -1,3 +1,13 @@
+export function formatNetworkAuditResource(request: Pick<Request, "method" | "url">): string {
+	const method = request.method.toUpperCase();
+	try {
+		const url = new URL(request.url);
+		return `${method} ${url.protocol}//${url.host}${url.pathname}`;
+	} catch {
+		return `${method} invalid-url`;
+	}
+}
+
 export function isAllowedNetworkRequest(request: Pick<Request, "method" | "url">): boolean {
 	try {
 		const method = request.method.toUpperCase();

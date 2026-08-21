@@ -12,12 +12,14 @@ Security invariants:
 - outbound HTTPS on port 443 is restricted by Gondolin host patterns; internal IP ranges are denied and methods are read-only except Git fetch's `git-upload-pack` POST;
 - push, package publish, and other HTTP mutations are denied independently of command spelling;
 - Host snapshot/export Git operations disable system/global config, hooks, external diff, and textconv; export never opens Agent-controlled `.git` metadata;
-- persistent dependency caches use dedicated roots, reject canonical/symlinked roots, and are never executed by Host code;
+- only credential-free HTTPS Git remotes are copied into the guest; Host Git identity, credentials, SSH config, and signing settings are not forwarded;
+- persistent dependency caches use dedicated non-overlapping roots, reject canonical/symlinked roots, and are never executed by Host code;
 - optional dev-server ingress binds only to an ephemeral `127.0.0.1` port and is closed before VM teardown;
+- audit URLs omit userinfo, query strings, and fragments, and daily logs older than 30 days are removed;
 - applying changes to the host is only available through `/sandbox apply`, after base verification, `git apply --check`, and user confirmation.
 
 The extension itself runs with host privileges and must be installed only from a trusted source. `--sandbox=off` intentionally provides no isolation.
 
 ## Not yet implemented
 
-Dynamic network grants, automatic dev-server detection, secret brokers, cloud credentials, and alternate backends are outside this MVP. Full real-VM adversarial coverage remains required before marking the sandbox stable.
+Dynamic network grants, automatic dev-server detection, secret brokers, cloud credentials, and alternate backends are outside this MVP. The real-VM integration gate covers core env/socket, commit, push-deny, disposable-workspace, and teardown invariants; broader filesystem, process-exhaustion, and network redirect matrices remain required before marking the sandbox stable.

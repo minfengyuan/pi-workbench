@@ -4,7 +4,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AuditLogger } from "../audit/logger.ts";
 import { buildCacheEnv, prepareCacheDirectories } from "../cache/manager.ts";
 import { buildGuestEnv } from "../policy/environment.ts";
-import { isAllowedNetworkRequest } from "../policy/network.ts";
+import { formatNetworkAuditResource, isAllowedNetworkRequest } from "../policy/network.ts";
 import type { SandboxConfig, WorkspaceSnapshot } from "../types.ts";
 import { GUEST_WORKSPACE } from "../tools/gondolin-operations.ts";
 
@@ -13,6 +13,7 @@ export class GondolinBackend {
 	private starting?: Promise<VM>;
 	private ingress?: IngressAccess;
 	private ingressStarting?: Promise<IngressAccess>;
+	private ingressGuestPort?: number;
 	private destroyed = false;
 	private readonly config: SandboxConfig;
 	private readonly snapshot: WorkspaceSnapshot;
@@ -53,15 +54,14 @@ export class GondolinBackend {
 			allowedHosts: this.config.network.allow,
 			blockInternalRanges: true,
 			isRequestAllowed: async (request) => {
-				const method = request.method.toUpperCase();
 				const allowed = isAllowedNetworkRequest(request);
 				if (!allowed) {
-					await this.audit.write({ session: this.sessionId, event: "network.request", decision: "deny", resource: `${method} ${request.url}` });
+					await this.audit.write({ session: this.sessionId, event: "network.request", decision: "deny", resource: formatNetworkAuditResource(request) });
 				}
 				return allowed;
 			},
 			onRequest: async (request) => {
-				await this.audit.write({ session: this.sessionId, event: "network.request", decision: "allow", resource: request.url });
+				await this.audit.write({ session: this.sessionId, event: "network.request", decision: "allow", resource: formatNetworkAuditResource(request) });
 			},
 		});
 		const cacheDirectories = await prepareCacheDirectories(this.config.cacheRoot, this.config.cache, this.snapshot.hostSource);
@@ -84,10 +84,24 @@ export class GondolinBackend {
 			if (gitProbe.exitCode !== 0) {
 				throw new Error(`Failed to provision guest Git: ${gitProbe.stderr.trim() || `exit ${gitProbe.exitCode}`}`);
 			}
-			const gitTrust = await created.exec(["/usr/bin/git", "config", "--global", "--add", "safe.directory", GUEST_WORKSPACE]);
-			if (this.destroyed) throw new Error("Sandbox backend was destroyed during startup");
-			if (gitTrust.exitCode !== 0) {
-				throw new Error(`Failed to configure guest Git workspace: ${gitTrust.stderr.trim() || `exit ${gitTrust.exitCode}`}`);
+			for (const [name, value] of [
+				["safe.directory", GUEST_WORKSPACE],
+				["user.name", "Pi Sandbox"],
+				["user.email", "pi-sandbox@invalid"],
+				["commit.gpgSign", "false"],
+			] as const) {
+				const gitConfig = await created.exec(["/usr/bin/git", "config", "--global", name, value]);
+				if (this.destroyed) throw new Error("Sandbox backend was destroyed during startup");
+				if (gitConfig.exitCode !== 0) {
+					throw new Error(`Failed to configure guest Git workspace: ${gitConfig.stderr.trim() || `exit ${gitConfig.exitCode}`}`);
+				}
+			}
+			if (this.snapshot.remoteUrl) {
+				const remote = await created.exec(["/usr/bin/git", "-C", GUEST_WORKSPACE, "remote", "add", "origin", this.snapshot.remoteUrl]);
+				if (this.destroyed) throw new Error("Sandbox backend was destroyed during startup");
+				if (remote.exitCode !== 0) {
+					throw new Error(`Failed to configure guest Git remote: ${remote.stderr.trim() || `exit ${remote.exitCode}`}`);
+				}
 			}
 			const probe = await created.exec(["/bin/sh", "-lc", "command -v bash || true"]);
 			if (this.destroyed) throw new Error("Sandbox backend was destroyed during startup");
@@ -111,11 +125,32 @@ export class GondolinBackend {
 		return result.stdout.trim();
 	}
 
+	async listFiles(): Promise<string> {
+		const active = await this.start();
+		const result = await active.exec(["/usr/bin/git", "-C", GUEST_WORKSPACE, "status", "--short"]);
+		if (result.exitCode !== 0) throw new Error(result.stderr.trim() || "Failed to list sandbox files");
+		return result.stdout.trim();
+	}
+
+	async resetWorkspace(snapshotCommit: string): Promise<void> {
+		const active = await this.start();
+		const reset = await active.exec(["/usr/bin/git", "-C", GUEST_WORKSPACE, "reset", "--hard", snapshotCommit]);
+		if (reset.exitCode !== 0) throw new Error(reset.stderr.trim() || "Failed to reset sandbox workspace");
+		const clean = await active.exec(["/usr/bin/git", "-C", GUEST_WORKSPACE, "clean", "-fdx"]);
+		if (clean.exitCode !== 0) throw new Error(clean.stderr.trim() || "Failed to clean sandbox workspace");
+	}
+
 	async serve(guestPort: number): Promise<string> {
 		if (!Number.isSafeInteger(guestPort) || guestPort < 1 || guestPort > 65535) throw new Error("Guest port must be between 1 and 65535");
 		const active = await this.start();
 		if (this.destroyed) throw new Error("Sandbox backend has been destroyed");
-		active.setIngressRoutes([{ prefix: "/", port: guestPort, stripPrefix: false }]);
+		if (this.ingressGuestPort !== undefined && this.ingressGuestPort !== guestPort) {
+			throw new Error(`Sandbox ingress already forwards guest port ${this.ingressGuestPort}`);
+		}
+		if (this.ingressGuestPort === undefined) {
+			this.ingressGuestPort = guestPort;
+			active.setIngressRoutes([{ prefix: "/", port: guestPort, stripPrefix: false }]);
+		}
 		if (!this.ingress && !this.ingressStarting) {
 			const starting = active.enableIngress({ listenHost: "127.0.0.1", listenPort: 0, allowWebSockets: true }).then(async (access) => {
 				if (this.destroyed) {
@@ -149,6 +184,7 @@ export class GondolinBackend {
 		}
 		const ingress = this.ingress;
 		this.ingress = undefined;
+		this.ingressGuestPort = undefined;
 		const active = this.vm;
 		this.vm = undefined;
 		try {

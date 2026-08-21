@@ -24,6 +24,7 @@ export interface WorkspaceSnapshot {
 	baselinePath: string;
 	baseCommit: string;
 	snapshotCommit: string;
+	remoteUrl?: string;
 	dirty: boolean;
 	files: number;
 	createdAt: number;
