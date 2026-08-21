@@ -17,6 +17,7 @@ import { AuditLogger } from "./audit/logger.ts";
 import { GondolinBackend } from "./backend/gondolin.ts";
 import { buildCacheEnv } from "./cache/manager.ts";
 import { loadConfig } from "./config/loader.ts";
+import { setSandboxActive } from "../permission-mode/runtime-bridge.ts";
 import { buildGuestEnv } from "./policy/environment.ts";
 import { classifyTool } from "./policy/tools.ts";
 import {
@@ -104,6 +105,7 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 		}
 		if (devMode) {
 			state = { ...state, status: "destroyed", instanceId: undefined, workspace: undefined, webUrl: undefined };
+			setSandboxActive(false);
 			pi.setActiveTools(["sandbox_status"]);
 			if (ctx) statusLine(ctx);
 		}
@@ -207,6 +209,7 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 			throw new Error(`Invalid --sandbox mode: ${String(requested)} (expected dev or off)`);
 		}
 		devMode = requested === "dev";
+		setSandboxActive(devMode);
 		if (!devMode) { state = { status: "off", blockedTools: [] }; statusLine(ctx); return; }
 
 		pi.setActiveTools([]);
@@ -225,6 +228,7 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 			const classified = classifyRuntimeTools();
 			state = { status: "ready", instanceId: vm.id, workspace: snapshot, blockedTools: classified.blocked };
 			pi.setActiveTools(classified.active);
+			setSandboxActive(true);
 			await audit.write({ session: sessionId, event: "workspace.snapshot", details: { baseCommit: snapshot.baseCommit, dirty: snapshot.dirty, files: snapshot.files } });
 			for (const name of classified.blocked) await audit.write({ session: sessionId, event: "tool.classified", decision: "deny", resource: name });
 			statusLine(ctx);
@@ -242,7 +246,10 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("session_shutdown", async (_event, ctx) => { await destroy(ctx); });
+	pi.on("session_shutdown", async (_event, ctx) => {
+		await destroy(ctx);
+		setSandboxActive(false);
+	});
 
 	pi.on("tool_call", async (event) => {
 		if (!devMode) return;

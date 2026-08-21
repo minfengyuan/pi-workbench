@@ -4,8 +4,19 @@ Pi Agent extensions packaged using the Pi Package structure.
 
 ## Extensions
 
+- [`extensions/permission-mode`](./extensions/permission-mode/) — Agent tool guardrails with Read Only, Workspace Write, and Full Access modes.
 - [`extensions/plan-mode`](./extensions/plan-mode/) — read-only exploration mode with plan extraction and progress tracking.
 - [`extensions/sandbox`](./extensions/sandbox/) — Gondolin-backed disposable development sandbox.
+
+## Permission modes
+
+```bash
+pi -e . --permission-mode=workspace-write
+```
+
+Use `/permissions` to select Read Only, Workspace Write, or Full Access. Global policy is read from `~/.pi/agent/permissions.yaml`; trusted projects may narrow it with `.pi/permissions.yaml`. Plan mode forces Read Only, and sandbox mode keeps all three permission levels inside the Gondolin guest.
+
+Permission Mode is an in-process guardrail, not a security sandbox. See [`extensions/permission-mode/README.md`](./extensions/permission-mode/README.md) and [SECURITY.md](./SECURITY.md).
 
 ## Development sandbox
 

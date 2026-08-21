@@ -1,4 +1,8 @@
-# Sandbox security boundary
+# Security boundaries
+
+`extensions/permission-mode` is an in-process guardrail against accidental Agent actions. It is not a sandbox: Pi extensions execute with host user privileges, and Permission Mode cannot constrain another extension's `pi.exec` calls, Node.js APIs, direct process execution, or malicious tool implementation. Its Shell and custom-tool classifications are trusted policy hints rather than OS enforcement. User `!`/`!!` commands intentionally bypass Permission Mode.
+
+Permission configuration fails closed, project policy cannot broaden global read roots or tool trust, Full Access requires explicit elevation, and a persisted Full Access mode is downgraded on reload/resume. These controls reduce mistakes but do not establish an adversarial security boundary.
 
 `extensions/sandbox` is the security boundary for `--sandbox=dev`.
 

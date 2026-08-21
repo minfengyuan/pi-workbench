@@ -16,6 +16,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
+import { setPlanModeActive } from "../permission-mode/runtime-bridge.ts";
 import { extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.ts";
 
 // Tools
@@ -128,11 +129,13 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		todoItems = [];
 
 		if (planModeEnabled) {
+			setPlanModeActive(true);
 			enablePlanModeTools();
 			ctx.ui.notify("Plan mode enabled. Built-in write tools disabled.");
 		} else {
 			restoreNormalModeTools();
-			ctx.ui.notify("Plan mode disabled. Full access restored.");
+			setPlanModeActive(false);
+			ctx.ui.notify("Plan mode disabled. Previous access restored.");
 		}
 		updateStatus(ctx);
 		persistState();
@@ -233,7 +236,7 @@ Do NOT attempt to make changes - just describe what you would do.`,
 			return {
 				message: {
 					customType: "plan-execution-context",
-					content: `[EXECUTING PLAN - Full tool access enabled]
+					content: `[EXECUTING PLAN - Previous permission mode restored]
 
 Remaining steps:
 ${todoList}
@@ -311,6 +314,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 			planModeEnabled = false;
 			executionMode = true;
 			restoreNormalModeTools();
+			setPlanModeActive(false);
 			updateStatus(ctx);
 			persistState();
 
@@ -382,9 +386,12 @@ After completing a step, include a [DONE:n] tag in your response.`;
 			markCompletedSteps(allText, todoItems);
 		}
 
+		setPlanModeActive(planModeEnabled);
 		if (planModeEnabled) {
 			enablePlanModeTools();
 		}
 		updateStatus(ctx);
 	});
+
+	pi.on("session_shutdown", async () => setPlanModeActive(false));
 }
