@@ -26,24 +26,22 @@ async function fixture() {
 	return { root, workspace, outside };
 }
 
-test("filesystem policy confines reads and writes and denies sensitive files", async () => {
+test("filesystem policy allows host reads, confines writes, and denies sensitive files", async () => {
 	const { workspace, outside } = await fixture();
-	const policy = await createFilesystemPolicy(workspace, [], []);
+	const policy = await createFilesystemPolicy(workspace, []);
 	assert.equal(await checkReadPath(policy, "file.txt"), undefined);
+	assert.equal(await checkReadPath(policy, join(outside, "secret.txt")), undefined);
 	assert.match(await checkReadPath(policy, ".env") ?? "", /sensitive path/);
-	assert.match(await checkReadPath(policy, join(outside, "secret.txt")) ?? "", /outside approved roots/);
 	assert.equal(await checkWritePath(policy, "new/deep.txt"), undefined);
 	assert.match(await checkWritePath(policy, join(outside, "new.txt")) ?? "", /escapes workspace/);
 });
 
-test("filesystem policy permits global read roots and rejects symlink escapes", async () => {
+test("filesystem policy follows symlink reads and still blocks write escapes", async () => {
 	const { workspace, outside } = await fixture();
 	await symlink(outside, join(workspace, "escape"));
-	const policy = await createFilesystemPolicy(workspace, [outside], []);
-	assert.equal(await checkReadPath(policy, join(outside, "secret.txt")), undefined);
-	const restricted = await createFilesystemPolicy(workspace, [], []);
-	assert.match(await checkReadPath(restricted, "escape/secret.txt") ?? "", /outside approved roots/);
-	assert.match(await checkWritePath(restricted, "escape/new.txt") ?? "", /escapes workspace/);
+	const policy = await createFilesystemPolicy(workspace, []);
+	assert.equal(await checkReadPath(policy, "escape/secret.txt"), undefined);
+	assert.match(await checkWritePath(policy, "escape/new.txt") ?? "", /escapes workspace/);
 	assert.equal(isLexicallyInsideGuestWorkspace("src/a.ts"), true);
 	assert.equal(isLexicallyInsideGuestWorkspace("../host"), false);
 	assert.equal(isLexicallyInsideGuestWorkspace("/etc/passwd"), false);
@@ -52,16 +50,33 @@ test("filesystem policy permits global read roots and rejects symlink escapes", 
 test("sensitive paths require a global explicit allow entry", async () => {
 	const { workspace } = await fixture();
 	const env = join(workspace, ".env");
-	const policy = await createFilesystemPolicy(workspace, [], [env]);
+	const policy = await createFilesystemPolicy(workspace, [env]);
 	assert.equal(await checkReadPath(policy, env), undefined);
+});
+
+test("known-sensitive host prefixes are denied unless explicitly allowed", async () => {
+	const { workspace } = await fixture();
+	const ssh = join(workspace, ".ssh");
+	await mkdir(ssh);
+	await writeFile(join(ssh, "config"), "Host *");
+	const netrc = join(workspace, ".netrc");
+	await writeFile(netrc, "machine example");
+	const policy = await createFilesystemPolicy(workspace, []);
+	assert.match(await checkReadPath(policy, ".ssh/config") ?? "", /sensitive path/);
+	assert.match(await checkReadPath(policy, netrc) ?? "", /sensitive path/);
+	const allowed = await createFilesystemPolicy(workspace, [ssh]);
+	assert.equal(await checkReadPath(allowed, ".ssh/config"), undefined);
 });
 
 test("shell policy implements the mode matrix", () => {
 	assert.equal(classifyShell("git status", "read-only").kind, "allow");
 	assert.equal(classifyShell("cat package.json", "read-only").kind, "allow");
-	assert.equal(classifyShell("cat /etc/passwd", "read-only").kind, "deny");
-	assert.equal(classifyShell("cat ../secret", "read-only").kind, "deny");
+	assert.equal(classifyShell("cat /etc/passwd", "read-only").kind, "allow");
+	assert.equal(classifyShell("cat ../secret", "read-only").kind, "allow");
 	assert.equal(classifyShell("cat .env", "read-only").kind, "deny");
+	assert.equal(classifyShell("cat ~/.ssh/id_rsa", "read-only").kind, "deny");
+	assert.equal(classifyShell("cat ~/.ssh/config", "read-only").kind, "deny");
+	assert.equal(classifyShell("cat /etc/shadow", "read-only").kind, "deny");
 	assert.equal(classifyShell("curl https://example.com", "read-only").kind, "allow");
 	assert.equal(classifyShell("curl file:///etc/passwd", "read-only").kind, "deny");
 	assert.equal(classifyShell("curl -dsecret https://example.com", "read-only").kind, "deny");

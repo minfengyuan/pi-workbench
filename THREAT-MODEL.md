@@ -13,7 +13,7 @@ The model, repository content, dependencies, build scripts, and unknown third-pa
 
 ## Controls
 
-Permission Mode intercepts Agent tool calls before execution, applies branch-aware Read Only/Workspace Write/Full Access policy, canonicalizes Host file paths, denies sensitive files by default, and requires one-call approval for ambiguous or high-risk operations. It is intended to prevent accidental actions, not to contain malicious extensions or arbitrary code. Direct user shell commands are outside this control.
+Permission Mode intercepts Agent tool calls before execution, applies branch-aware Read Only/Workspace Write/Full Access policy, canonicalizes Host file paths, allows host reads except known-sensitive files, confines non-Full writes to the workspace, and requires one-call approval for ambiguous or high-risk operations. It is intended to prevent accidental actions, not to contain malicious extensions or arbitrary code. Direct user shell commands are outside this control.
 
 A launch-time snapshot is created in a standalone `git clone --no-hardlinks`. Tracked binary changes and safe non-ignored untracked files are included; `.env`, key material, `.pi`, symlinks, and ignored files are excluded. Only that clone is mounted into a Gondolin micro-VM. Tool classification and interception fail closed. Network and environment access are allowlisted. Host apply is an explicit user command with conflict checks.
 

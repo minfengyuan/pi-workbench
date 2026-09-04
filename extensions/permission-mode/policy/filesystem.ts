@@ -1,7 +1,9 @@
 import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
-const SENSITIVE_BASENAME = /^(?:\.env(?:\..*)?|credentials?(?:\..*)?|tokens?(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|key|p12|pfx))$/i;
+const SENSITIVE_BASENAME = /^(?:\.env(?:\..*)?|\.netrc|\.npmrc|\.pypirc|credentials?(?:\..*)?|tokens?(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|key|p12|pfx))$/i;
+const SENSITIVE_DIR_NAMES = new Set([".ssh", ".gnupg", ".aws", ".azure"]);
+const SENSITIVE_ETC_FILES = new Set(["shadow", "master.passwd", "sudoers"]);
 
 function isInside(root: string, target: string): boolean {
 	const rel = relative(root, target);
@@ -34,34 +36,34 @@ async function canonicalExisting(path: string): Promise<string> {
 
 export interface FilesystemPolicy {
 	workspace: string;
-	readRoots: string[];
 	allowSensitivePaths: string[];
 }
 
 export async function createFilesystemPolicy(
 	workspace: string,
-	readRoots: string[],
 	allowSensitivePaths: string[],
 ): Promise<FilesystemPolicy> {
 	return {
 		workspace: await realpath(workspace),
-		readRoots: await Promise.all(readRoots.map((path) => realpath(path))),
 		allowSensitivePaths: await Promise.all(allowSensitivePaths.map((path) => canonicalForWrite(path))),
 	};
 }
 
 function isSensitive(path: string): boolean {
-	const normalized = path.split(sep);
+	const parts = path.split(sep);
 	if (SENSITIVE_BASENAME.test(basename(path))) return true;
-	const git = normalized.lastIndexOf(".git");
-	return git >= 0 && ["config", "credentials"].includes(normalized[git + 1] ?? "");
+	if (parts.some((part) => SENSITIVE_DIR_NAMES.has(part))) return true;
+	const git = parts.lastIndexOf(".git");
+	if (git >= 0 && ["config", "credentials"].includes(parts[git + 1] ?? "")) return true;
+	const config = parts.lastIndexOf(".config");
+	if (config >= 0 && parts[config + 1] === "gcloud") return true;
+	const etc = parts.lastIndexOf("etc");
+	return etc >= 0 && SENSITIVE_ETC_FILES.has(parts[etc + 1] ?? "");
 }
 
 export async function checkReadPath(policy: FilesystemPolicy, inputPath: string): Promise<string | undefined> {
 	try {
 		const target = await canonicalExisting(resolve(policy.workspace, inputPath || "."));
-		const roots = [policy.workspace, ...policy.readRoots];
-		if (!roots.some((root) => isInside(root, target))) return `read path is outside approved roots: ${inputPath}`;
 		if (isSensitive(target) && !policy.allowSensitivePaths.some((root) => isInside(root, target))) {
 			return `sensitive path is not globally allowed: ${inputPath}`;
 		}

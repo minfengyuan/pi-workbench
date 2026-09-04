@@ -125,7 +125,7 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 		const root = await workspaceRoot(ctx.cwd);
 		try {
 			config = await loadPermissionConfig(root, ctx.isProjectTrusted());
-			filesystem = await createFilesystemPolicy(root, config.readRoots, config.allowSensitivePaths);
+			filesystem = await createFilesystemPolicy(root, config.allowSensitivePaths);
 			const rawFlag = pi.getFlag("permission-mode");
 			const cliMode = rawFlag === "" || rawFlag === undefined ? undefined : parseMode(rawFlag);
 			if (rawFlag !== "" && rawFlag !== undefined && !cliMode) {
@@ -136,7 +136,7 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 		} catch (error) {
 			configError = (error as Error).message;
 			config = DEFAULT_PERMISSION_CONFIG;
-			filesystem = await createFilesystemPolicy(root, [], []);
+			filesystem = await createFilesystemPolicy(root, []);
 			baseMode = "read-only";
 			if (ctx.hasUI) ctx.ui.notify(`Permission policy failed closed: ${configError}`, "error");
 		}
@@ -258,6 +258,7 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 			"[AGENT PERMISSION POLICY]",
 			`mode=${effectiveMode()}`,
 			`workspace=${root}`,
+			"Outside Full Access, host files are readable except known-sensitive paths; writes are limited to the workspace.",
 			"Only the user can change the mode with /permissions.",
 			"Do not retry denied operations through alternate tools.",
 		].join("\n");

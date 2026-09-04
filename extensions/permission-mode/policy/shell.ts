@@ -8,10 +8,10 @@ const GIT_ADD = /^\s*git(?:\s+-\S+)*\s+add(?:\s|$)/i;
 const GIT_MUTATION = /^\s*git(?:\s+-\S+)*\s+(?:commit|checkout|switch|restore|stash|merge|rebase|cherry-pick|fetch|pull|reset|clean|push|remote)(?:\s|$)/i;
 const PACKAGE_SCRIPT = /^\s*(?:npm|pnpm|yarn|bun)\s+(?:run\s+\S+|test|install|ci|add|remove|update|publish)(?:\s|$)/i;
 const DESTRUCTIVE = /(?:^|\s)(?:rm|rmdir|chmod|chown|chgrp|truncate|dd|shred|sudo|su|kill|pkill|killall|systemctl|service)(?:\s|$)/i;
-const SIMPLE_LOCAL_MUTATION = /^\s*(?:mkdir|touch|cp|mv)\s+(?:(?:-[A-Za-z]+)\s+)*(?!.*(?:^|\s)(?:\/|\.\.\/))[^;&|`$<>\n\r]+$/i;
+const SIMPLE_LOCAL_MUTATION = /^\s*(?:mkdir|touch|cp|mv)\s+(?:(?:-[A-Za-z]+)\s+)*(?!\/|~)(?!.*(?:\s(?:\/|~)|\.\.\/))[^;&|`$<>\n\r]+$/i;
 const DANGEROUS_READ_FLAGS = /(?:\bfind\b.*(?:-delete|-exec(?:dir)?|-ok(?:dir)?|-fprint)|\bsort\b.*(?:\s-o\s|--output)|\bdiff\b.*--output)/i;
-const PATH_ESCAPE = /(?:^|\s)(?:\/|~(?:\/|\s|$)|\.\.(?:\/|\s|$)|file:)|\$[{A-Za-z_]/i;
-const SENSITIVE_PATH = /(?:^|[\/\s])(?:\.env(?:\.[^\s/]*)?|credentials?(?:\.[^\s/]*)?|tokens?(?:\.[^\s/]*)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|[^\s/]+\.(?:pem|key|p12|pfx))(?:\s|$)/i;
+const PATH_ESCAPE = /(?:^|\s)file:|\$[{A-Za-z_]/i;
+const SENSITIVE_PATH = /(?:^|[\/\s])(?:\.env(?:\.[^\s/]*)?|\.ssh|\.gnupg|\.aws|\.azure|\.netrc|\.npmrc|\.pypirc|credentials?(?:\.[^\s/]*)?|tokens?(?:\.[^\s/]*)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|[^\s/]+\.(?:pem|key|p12|pfx))(?:\s|$|\/)|(?:^|\s)\/etc\/(?:shadow|master\.passwd|sudoers)/i;
 
 function isNetworkRead(command: string): boolean {
 	const tokens = command.split(/\s+/);
