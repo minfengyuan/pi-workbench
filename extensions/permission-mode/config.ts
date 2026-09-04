@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { isAbsolute, join, normalize } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, normalize, resolve } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { parse } from "yaml";
 import type { PermissionConfig, PermissionMode, ToolCapability } from "./types.ts";
@@ -9,18 +10,20 @@ interface RawConfig {
 	allowedReadRoots?: unknown;
 	readRoots?: unknown;
 	allowSensitivePaths?: unknown;
+	additionalDirectories?: unknown;
 	tools?: unknown;
 	disabledTools?: unknown;
 }
 
-const GLOBAL_KEYS = new Set(["defaultMode", "allowedReadRoots", "allowSensitivePaths", "tools"]);
-const PROJECT_KEYS = new Set(["defaultMode", "readRoots", "disabledTools"]);
+const GLOBAL_KEYS = new Set(["defaultMode", "allowedReadRoots", "allowSensitivePaths", "additionalDirectories", "tools"]);
+const PROJECT_KEYS = new Set(["defaultMode", "readRoots", "additionalDirectories", "disabledTools"]);
 const CAPABILITIES = new Set<ToolCapability>(["read", "workspace-write", "network-read", "full"]);
 
 export const DEFAULT_PERMISSION_CONFIG: PermissionConfig = {
 	defaultMode: "workspace-write",
 	readRoots: [],
 	allowSensitivePaths: [],
+	additionalDirectories: [],
 	tools: {},
 	disabledTools: [],
 };
@@ -65,6 +68,18 @@ function absolutePaths(value: unknown, field: string): string[] | undefined {
 	return values.map(normalize);
 }
 
+function resolvedPaths(value: unknown, field: string, base: string): string[] {
+	const values = strings(value, field);
+	if (!values) return [];
+	return [...new Set(values.map((path) => normalize(isAbsolute(path) ? path : resolve(base, path))))];
+}
+
+export function parseAddDirFlag(raw: unknown, cwd: string): string[] {
+	if (raw === undefined || raw === "" || raw === true) return [];
+	if (typeof raw !== "string") throw new Error("invalid --add-dir: expected a comma-separated path list");
+	return resolvedPaths(raw.split(",").map((item) => item.trim()).filter((item) => item !== ""), "--add-dir", cwd);
+}
+
 function tools(value: unknown): Record<string, ToolCapability> {
 	if (value === undefined) return {};
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("tools must be a mapping");
@@ -78,7 +93,12 @@ function tools(value: unknown): Record<string, ToolCapability> {
 	return result;
 }
 
-export function mergePermissionConfig(global: RawConfig | undefined, project: RawConfig | undefined): PermissionConfig {
+export function mergePermissionConfig(
+	global: RawConfig | undefined,
+	project: RawConfig | undefined,
+	globalBase = homedir(),
+	projectBase = globalBase,
+): PermissionConfig {
 	rejectUnknownKeys(global, GLOBAL_KEYS, "global");
 	rejectUnknownKeys(project, PROJECT_KEYS, "project");
 	const allowedReadRoots = absolutePaths(global?.allowedReadRoots, "allowedReadRoots") ?? [];
@@ -91,6 +111,10 @@ export function mergePermissionConfig(global: RawConfig | undefined, project: Ra
 		defaultMode: mode(project?.defaultMode, "project defaultMode") ?? mode(global?.defaultMode, "global defaultMode") ?? DEFAULT_PERMISSION_CONFIG.defaultMode,
 		readRoots: selectedReadRoots ?? allowedReadRoots,
 		allowSensitivePaths: absolutePaths(global?.allowSensitivePaths, "allowSensitivePaths") ?? [],
+		additionalDirectories: [...new Set([
+			...resolvedPaths(global?.additionalDirectories, "additionalDirectories", globalBase),
+			...resolvedPaths(project?.additionalDirectories, "additionalDirectories", projectBase),
+		])],
 		tools: tools(global?.tools),
 		disabledTools: strings(project?.disabledTools, "disabledTools") ?? [],
 	};
@@ -99,5 +123,5 @@ export function mergePermissionConfig(global: RawConfig | undefined, project: Ra
 export async function loadPermissionConfig(projectRoot: string, projectTrusted: boolean): Promise<PermissionConfig> {
 	const global = await readConfig(join(getAgentDir(), "permissions.yaml"));
 	const project = projectTrusted ? await readConfig(join(projectRoot, CONFIG_DIR_NAME, "permissions.yaml")) : undefined;
-	return mergePermissionConfig(global, project);
+	return mergePermissionConfig(global, project, homedir(), projectRoot);
 }

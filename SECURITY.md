@@ -2,7 +2,7 @@
 
 `extensions/permission-mode` is an in-process guardrail against accidental Agent actions. It is not a sandbox: Pi extensions execute with host user privileges, and Permission Mode cannot constrain another extension's `pi.exec` calls, Node.js APIs, direct process execution, or malicious tool implementation. Its Shell and custom-tool classifications are trusted policy hints rather than OS enforcement. User `!`/`!!` commands intentionally bypass Permission Mode.
 
-Permission configuration fails closed, project policy cannot broaden global tool trust, Full Access requires explicit elevation, and a persisted Full Access mode is downgraded on reload/resume. Outside Full Access, host reads use safe-read (`/` readable, known-sensitive paths denied, `allowSensitivePaths` may override) and writes stay inside the workspace. These controls reduce mistakes but do not establish an adversarial security boundary.
+Permission configuration fails closed, project policy cannot broaden global tool trust, Full Access requires explicit elevation, and a persisted Full Access mode is downgraded on reload/resume. Outside Full Access, host reads use safe-read (`/` readable, known-sensitive paths denied, `allowSensitivePaths` may override) and writes stay inside the workspace plus any `additionalDirectories` / `--add-dir` roots. These controls reduce mistakes but do not establish an adversarial security boundary.
 
 `extensions/sandbox` is the security boundary for `--sandbox=dev`.
 

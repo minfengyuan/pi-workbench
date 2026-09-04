@@ -36,15 +36,28 @@ async function canonicalExisting(path: string): Promise<string> {
 
 export interface FilesystemPolicy {
 	workspace: string;
+	writeRoots: string[];
 	allowSensitivePaths: string[];
+}
+
+async function canonicalDirectory(path: string): Promise<string> {
+	const canonical = await realpath(path);
+	const stat = await lstat(canonical);
+	if (!stat.isDirectory()) throw new Error(`additional directory is not a directory: ${path}`);
+	if (dirname(canonical) === canonical) throw new Error(`additional directory cannot be the filesystem root: ${path}`);
+	return canonical;
 }
 
 export async function createFilesystemPolicy(
 	workspace: string,
 	allowSensitivePaths: string[],
+	additionalDirectories: string[] = [],
 ): Promise<FilesystemPolicy> {
+	const workspaceRoot = await realpath(workspace);
+	const extras = await Promise.all(additionalDirectories.map((path) => canonicalDirectory(path)));
 	return {
-		workspace: await realpath(workspace),
+		workspace: workspaceRoot,
+		writeRoots: [...new Set([workspaceRoot, ...extras])],
 		allowSensitivePaths: await Promise.all(allowSensitivePaths.map((path) => canonicalForWrite(path))),
 	};
 }
@@ -76,7 +89,7 @@ export async function checkReadPath(policy: FilesystemPolicy, inputPath: string)
 export async function checkWritePath(policy: FilesystemPolicy, inputPath: string): Promise<string | undefined> {
 	try {
 		const target = await canonicalForWrite(resolve(policy.workspace, inputPath));
-		if (!isInside(policy.workspace, target)) return `write path escapes workspace: ${inputPath}`;
+		if (!policy.writeRoots.some((root) => isInside(root, target))) return `write path escapes write roots: ${inputPath}`;
 		return undefined;
 	} catch (error) {
 		return `write path cannot be validated: ${(error as Error).message}`;

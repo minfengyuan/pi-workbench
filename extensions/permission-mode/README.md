@@ -5,7 +5,7 @@ Host-process guardrails for Pi Agent tool calls. This extension reduces accident
 ## Modes
 
 - **Read Only** — host safe-read and read-only network tools. Writes, mutating shell commands, and unknown tools are blocked.
-- **Workspace Write** — host safe-read plus file writes inside the enclosing Git repository (or Pi cwd outside Git). Ambiguous shell commands, build scripts, remote mutations, and unknown tools require one-call approval.
+- **Workspace Write** — host safe-read plus file writes inside the enclosing Git repository (or Pi cwd outside Git) and any `additionalDirectories` / `--add-dir` roots. Ambiguous shell commands, build scripts, remote mutations, and unknown tools require one-call approval.
 - **Full Access** — host read/write; this extension stops blocking tool calls. Existing Pi tool selection and Gondolin sandbox restrictions remain active.
 
 Host safe-read is not an unconditional `/` allowlist: any canonical host path is readable, known-sensitive paths are denied, and global `allowSensitivePaths` can override that deny. `grep`/`find` are checked on their path argument only, so nested sensitive files inside an allowed directory are a residual risk.
@@ -16,7 +16,10 @@ Use `/permissions` to switch modes. Full Access requires a second confirmation. 
 pi -e /path/to/pi-workbench --permission-mode=read-only
 pi -e /path/to/pi-workbench --permission-mode=workspace-write
 pi -e /path/to/pi-workbench --permission-mode=full-access
+pi -e /path/to/pi-workbench --add-dir ../shared,/opt/other
 ```
+
+`--add-dir` is a single string (Pi keeps one value per flag). Separate multiple directories with commas. Relative entries resolve against the process cwd. Extra write roots appear in the `perm:` status (`+N`), `/permissions`, and the agent system prompt. They do not apply inside `--sandbox=dev`.
 
 A persisted Full Access selection is downgraded to Workspace Write after reload, resume, or process restart unless the CLI explicitly selects Full Access again. Plan mode forces Read Only. With `--sandbox=dev`, every mode remains inside the Gondolin guest.
 
@@ -32,6 +35,8 @@ allowedReadRoots:
   - /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs
 allowSensitivePaths:
   - /absolute/project/path/.env.example
+additionalDirectories:
+  - /absolute/shared/lib
 tools:
   documentation_lookup: read
   custom_writer: workspace-write
@@ -47,11 +52,13 @@ Trusted project policy: `<git-root>/.pi/permissions.yaml`
 defaultMode: read-only
 readRoots:
   - /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs
+additionalDirectories:
+  - ../shared
 disabledTools:
   - deployment
 ```
 
-Project policy can disable tools and choose a non-Full default. `readRoots` must still be a subset of the global `allowedReadRoots` list when present, but neither list gates reads. Tool names are exact; glob matching is intentionally unsupported. A custom tool classification is a global administrator's trust statement—the extension cannot infer or validate arbitrary custom schemas.
+Project policy can disable tools, choose a non-Full default, and add write roots. `additionalDirectories` from global config, trusted project config, and `--add-dir` are unioned. Relative project entries resolve against the project root; relative global entries resolve against the home directory. `readRoots` must still be a subset of the global `allowedReadRoots` list when present, but neither list gates reads. Tool names are exact; glob matching is intentionally unsupported. A custom tool classification is a global administrator's trust statement—the extension cannot infer or validate arbitrary custom schemas.
 
 Invalid configuration fails closed to Read Only. Configuration is loaded at extension/session initialization and `/reload`; files are not watched live.
 

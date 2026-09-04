@@ -6,6 +6,7 @@ export interface PermissionConfig {
 	defaultMode: Exclude<PermissionMode, "full-access">;
 	readRoots: string[];
 	allowSensitivePaths: string[];
+	additionalDirectories: string[];
 	tools: Record<string, ToolCapability>;
 	disabledTools: string[];
 }

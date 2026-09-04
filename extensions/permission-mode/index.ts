@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { findGitRoot } from "../sandbox/workspace/manager.ts";
-import { DEFAULT_PERMISSION_CONFIG, loadPermissionConfig } from "./config.ts";
+import { DEFAULT_PERMISSION_CONFIG, loadPermissionConfig, parseAddDirFlag } from "./config.ts";
 import {
 	checkReadPath,
 	checkWritePath,
@@ -67,14 +67,29 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 		type: "string",
 		default: "",
 	});
+	pi.registerFlag("add-dir", {
+		description: "Extra writable directories (comma-separated) for workspace-write",
+		type: "string",
+		default: "",
+	});
 
 	function effectiveMode(): PermissionMode {
 		return effectivePermissionMode(baseMode, getIntegrationState().planMode);
 	}
 
+	function extraWriteRootCount(): number {
+		if (getIntegrationState().sandbox) return 0;
+		return Math.max(0, (filesystem?.writeRoots.length ?? 1) - 1);
+	}
+
 	function updateStatus(ctx: ExtensionContext): void {
 		const integration = getIntegrationState();
-		const suffix = [integration.planMode ? "PLAN" : undefined, integration.sandbox ? "SBX" : undefined]
+		const extras = extraWriteRootCount();
+		const suffix = [
+			extras > 0 ? `+${extras}` : undefined,
+			integration.planMode ? "PLAN" : undefined,
+			integration.sandbox ? "SBX" : undefined,
+		]
 			.filter(Boolean)
 			.join("·");
 		const label = `${MODE_LABELS[effectiveMode()]}${suffix ? `·${suffix}` : ""}`;
@@ -125,7 +140,8 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 		const root = await workspaceRoot(ctx.cwd);
 		try {
 			config = await loadPermissionConfig(root, ctx.isProjectTrusted());
-			filesystem = await createFilesystemPolicy(root, config.allowSensitivePaths);
+			const cliDirs = parseAddDirFlag(pi.getFlag("add-dir"), ctx.cwd);
+			filesystem = await createFilesystemPolicy(root, config.allowSensitivePaths, [...config.additionalDirectories, ...cliDirs]);
 			const rawFlag = pi.getFlag("permission-mode");
 			const cliMode = rawFlag === "" || rawFlag === undefined ? undefined : parseMode(rawFlag);
 			if (rawFlag !== "" && rawFlag !== undefined && !cliMode) {
@@ -229,6 +245,10 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Plan mode forces Read Only; exit plan mode before changing permissions", "warning");
 				return;
 			}
+			const roots = getIntegrationState().sandbox
+				? ["/workspace (Gondolin guest)"]
+				: filesystem?.writeRoots ?? [];
+			if (roots.length > 0) ctx.ui.notify(`Write roots:\n${roots.join("\n")}`, "info");
 			const choice = await ctx.ui.select("Agent permission mode", ["Read Only", "Workspace Write", "Full Access"]);
 			const selected: PermissionMode | undefined = choice === "Read Only"
 				? "read-only"
@@ -253,12 +273,14 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", async (event) => {
 		const integration = getIntegrationState();
-		const root = integration.sandbox ? "/workspace (Gondolin guest)" : filesystem?.workspace ?? "unavailable";
+		const writeRoots = integration.sandbox
+			? ["/workspace (Gondolin guest); host additionalDirectories do not apply"]
+			: filesystem?.writeRoots ?? ["unavailable"];
 		const policy = [
 			"[AGENT PERMISSION POLICY]",
 			`mode=${effectiveMode()}`,
-			`workspace=${root}`,
-			"Outside Full Access, host files are readable except known-sensitive paths; writes are limited to the workspace.",
+			`writeRoots=${writeRoots.join(", ")}`,
+			"Outside Full Access, host files are readable except known-sensitive paths; writes are limited to writeRoots.",
 			"Only the user can change the mode with /permissions.",
 			"Do not retry denied operations through alternate tools.",
 		].join("\n");

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -33,7 +33,7 @@ test("filesystem policy allows host reads, confines writes, and denies sensitive
 	assert.equal(await checkReadPath(policy, join(outside, "secret.txt")), undefined);
 	assert.match(await checkReadPath(policy, ".env") ?? "", /sensitive path/);
 	assert.equal(await checkWritePath(policy, "new/deep.txt"), undefined);
-	assert.match(await checkWritePath(policy, join(outside, "new.txt")) ?? "", /escapes workspace/);
+	assert.match(await checkWritePath(policy, join(outside, "new.txt")) ?? "", /escapes write roots/);
 });
 
 test("filesystem policy follows symlink reads and still blocks write escapes", async () => {
@@ -41,7 +41,7 @@ test("filesystem policy follows symlink reads and still blocks write escapes", a
 	await symlink(outside, join(workspace, "escape"));
 	const policy = await createFilesystemPolicy(workspace, []);
 	assert.equal(await checkReadPath(policy, "escape/secret.txt"), undefined);
-	assert.match(await checkWritePath(policy, "escape/new.txt") ?? "", /escapes workspace/);
+	assert.match(await checkWritePath(policy, "escape/new.txt") ?? "", /escapes write roots/);
 	assert.equal(isLexicallyInsideGuestWorkspace("src/a.ts"), true);
 	assert.equal(isLexicallyInsideGuestWorkspace("../host"), false);
 	assert.equal(isLexicallyInsideGuestWorkspace("/etc/passwd"), false);
@@ -66,6 +66,20 @@ test("known-sensitive host prefixes are denied unless explicitly allowed", async
 	assert.match(await checkReadPath(policy, netrc) ?? "", /sensitive path/);
 	const allowed = await createFilesystemPolicy(workspace, [ssh]);
 	assert.equal(await checkReadPath(allowed, ".ssh/config"), undefined);
+});
+
+test("additional directories expand workspace-write roots", async () => {
+	const { root, workspace, outside } = await fixture();
+	const other = join(root, "other");
+	await mkdir(other);
+	const policy = await createFilesystemPolicy(workspace, [], [outside]);
+	assert.deepEqual(policy.writeRoots, [await realpath(workspace), await realpath(outside)]);
+	assert.equal(await checkWritePath(policy, join(outside, "new.txt")), undefined);
+	assert.match(await checkWritePath(policy, join(other, "new.txt")) ?? "", /escapes write roots/);
+	assert.equal(await checkWritePath(policy, "file.txt"), undefined);
+	await assert.rejects(createFilesystemPolicy(workspace, [], ["/"]), /filesystem root/);
+	await assert.rejects(createFilesystemPolicy(workspace, [], [join(workspace, "file.txt")]), /not a directory/);
+	await assert.rejects(createFilesystemPolicy(workspace, [], [join(root, "missing")]), /ENOENT|not a directory|cannot be validated|no such file/i);
 });
 
 test("shell policy implements the mode matrix", () => {

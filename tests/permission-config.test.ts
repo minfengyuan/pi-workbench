@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mergePermissionConfig } from "../extensions/permission-mode/config.ts";
+import { mergePermissionConfig, parseAddDirFlag } from "../extensions/permission-mode/config.ts";
 
 const rootA = "/opt/pi-docs";
 const rootB = "/opt/shared";
@@ -34,4 +34,20 @@ test("permission config validates absolute roots, capabilities, and unknown fiel
 	assert.throws(() => mergePermissionConfig({ allowedReadRoots: ["relative"] }, undefined), /absolute paths/);
 	assert.throws(() => mergePermissionConfig({ tools: { custom: "owner" } }, undefined), /must be read/);
 	assert.throws(() => mergePermissionConfig({ surprise: true } as never, undefined), /unknown fields/);
+});
+
+test("additionalDirectories union global and project paths and resolve relatives", () => {
+	const config = mergePermissionConfig(
+		{ additionalDirectories: ["/opt/global", "from-home"] },
+		{ additionalDirectories: ["../shared"] },
+		"/home/user",
+		"/work/api",
+	);
+	assert.deepEqual(config.additionalDirectories, ["/opt/global", "/home/user/from-home", "/work/shared"]);
+});
+
+test("parseAddDirFlag splits comma-separated cwd-relative paths", () => {
+	assert.deepEqual(parseAddDirFlag("", "/work"), []);
+	assert.deepEqual(parseAddDirFlag("../shared, /opt/other", "/work/api"), ["/work/shared", "/opt/other"]);
+	assert.deepEqual(parseAddDirFlag(true, "/work"), []);
 });
