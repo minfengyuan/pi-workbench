@@ -1,16 +1,22 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import { mergePermissionConfig, parseAddDirFlag } from "../extensions/permission-mode/config.ts";
 
-const rootA = "/opt/pi-docs";
-const rootB = "/opt/shared";
+const win = process.platform === "win32";
+const host = (...parts: string[]) => win ? path.win32.join("C:\\", ...parts) : path.posix.join("/", ...parts);
+
+const rootA = host("opt", "pi-docs");
+const rootB = host("opt", "shared");
+const home = host("home", "user");
+const api = host("work", "api");
 
 test("permission project config can only narrow global capabilities", () => {
 	const config = mergePermissionConfig(
 		{
 			defaultMode: "workspace-write",
 			allowedReadRoots: [rootA, rootB],
-			allowSensitivePaths: ["/work/project/.env"],
+			allowSensitivePaths: [host("work", "project", ".env")],
 			tools: { docs: "read", deploy: "full" },
 		},
 		{ defaultMode: "read-only", readRoots: [rootA], disabledTools: ["deploy"] },
@@ -36,18 +42,25 @@ test("permission config validates absolute roots, capabilities, and unknown fiel
 	assert.throws(() => mergePermissionConfig({ surprise: true } as never, undefined), /unknown fields/);
 });
 
+test("windows paths without a drive or UNC root are not absolute", { skip: win ? false : "host paths are POSIX here" }, () => {
+	assert.throws(() => mergePermissionConfig({ allowedReadRoots: ["/opt/pi-docs"] }, undefined), /absolute paths/);
+	assert.throws(() => mergePermissionConfig({ allowedReadRoots: ["\\opt\\pi-docs"] }, undefined), /absolute paths/);
+});
+
 test("additionalDirectories union global and project paths and resolve relatives", () => {
+	const globalDir = host("opt", "global");
 	const config = mergePermissionConfig(
-		{ additionalDirectories: ["/opt/global", "from-home"] },
+		{ additionalDirectories: [globalDir, "from-home"] },
 		{ additionalDirectories: ["../shared"] },
-		"/home/user",
-		"/work/api",
+		home,
+		api,
 	);
-	assert.deepEqual(config.additionalDirectories, ["/opt/global", "/home/user/from-home", "/work/shared"]);
+	assert.deepEqual(config.additionalDirectories, [globalDir, path.resolve(home, "from-home"), path.resolve(api, "../shared")]);
 });
 
 test("parseAddDirFlag splits comma-separated cwd-relative paths", () => {
-	assert.deepEqual(parseAddDirFlag("", "/work"), []);
-	assert.deepEqual(parseAddDirFlag("../shared, /opt/other", "/work/api"), ["/work/shared", "/opt/other"]);
-	assert.deepEqual(parseAddDirFlag(true, "/work"), []);
+	const other = host("opt", "other");
+	assert.deepEqual(parseAddDirFlag("", api), []);
+	assert.deepEqual(parseAddDirFlag(`../shared, ${other}`, api), [path.resolve(api, "../shared"), other]);
+	assert.deepEqual(parseAddDirFlag(true, api), []);
 });

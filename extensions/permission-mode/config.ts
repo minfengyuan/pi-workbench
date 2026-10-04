@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, normalize, resolve } from "node:path";
+import { isAbsolute, join, normalize, parse as parsePath, resolve } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { parse } from "yaml";
 import type { PermissionConfig, PermissionMode, ToolCapability } from "./types.ts";
@@ -61,10 +61,17 @@ function strings(value: unknown, field: string): string[] | undefined {
 	return [...new Set(value)];
 }
 
+function isHostAbsolute(path: string): boolean {
+	if (!isAbsolute(path)) return false;
+	if (process.platform !== "win32") return true;
+	const root = parsePath(path).root;
+	return /^[A-Za-z]:[\\/]/.test(root) || root.startsWith("\\\\");
+}
+
 function absolutePaths(value: unknown, field: string): string[] | undefined {
 	const values = strings(value, field);
 	if (!values) return undefined;
-	for (const path of values) if (!isAbsolute(path)) throw new Error(`${field} entries must be absolute paths: ${path}`);
+	for (const path of values) if (!isHostAbsolute(path)) throw new Error(`${field} entries must be absolute paths: ${path}`);
 	return values.map(normalize);
 }
 
