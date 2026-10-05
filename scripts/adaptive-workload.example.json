@@ -1,0 +1,19 @@
+{
+  "repository": "../",
+  "provider": "openai",
+  "model": "replace-with-your-Pi-reasoning-model-id",
+  "tasks": [
+    {
+      "name": "slugify-fixture",
+      "prompt": "Create adaptive-benchmark-fixture.mjs exporting slugify(text). Trim whitespace, lowercase ASCII, replace runs of characters other than ASCII letters and digits with a hyphen, and strip leading/trailing hyphens. Return an empty string when no letters or digits remain. Do not add dependencies. Verify the examples Hello World -> hello-world and --- -> empty string.",
+      "verify": {
+        "command": "node",
+        "args": [
+          "--input-type=module",
+          "-e",
+          "import assert from 'node:assert/strict'; import {slugify} from './adaptive-benchmark-fixture.mjs'; assert.equal(slugify(' Hello, World! '), 'hello-world'); assert.equal(slugify('---'), ''); assert.equal(slugify('A___B  42'), 'a-b-42');"
+        ]
+      }
+    }
+  ]
+}
