@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -19,7 +20,7 @@ test("comparison defaults to offline without credentials, network or workspace m
 		const preload = join(root, "no-network.mjs");
 		await writeFile(preload, 'globalThis.fetch = () => { throw new Error("offline network attempted"); };');
 		const before = (await run("git", ["-C", root, "status", "--porcelain"])).stdout;
-		const { stdout } = await run(process.execPath, ["--import", preload, "scripts/compare-adaptive-reasoning.mjs", workload], { env: { ...process.env, PI_CODING_AGENT_DIR: join(root, "nonexistent-agent"), PI_OFFLINE: "1" } });
+		const { stdout } = await run(process.execPath, ["--import", pathToFileURL(preload).href, "scripts/compare-adaptive-reasoning.mjs", workload], { env: { ...process.env, PI_CODING_AGENT_DIR: join(root, "nonexistent-agent"), PI_OFFLINE: "1" } });
 		const plan = JSON.parse(stdout);
 		assert.equal(plan.live, false);
 		assert.deepEqual(plan.variants, ["medium", "high", "adaptive"]);
@@ -74,7 +75,7 @@ globalThis.fetch = async (url) => {
  return Response.json({model:'typesafe/jev-1.13',provider:'TypeSafe',answers:{effort:{type:'choice',choice:'low'},lease:{type:'choice',choice:'1'}},usage:{cost:0.01}});
 };
 `);
-		const { stdout } = await run(process.execPath, ["--import", preload, "scripts/compare-adaptive-reasoning.mjs", workload, "--live"], { env: { ...process.env, PI_CODING_AGENT_DIR: join(root, "nonexistent-agent"), PI_OFFLINE: "1" } });
+		const { stdout } = await run(process.execPath, ["--import", pathToFileURL(preload).href, "scripts/compare-adaptive-reasoning.mjs", workload, "--live"], { env: { ...process.env, PI_CODING_AGENT_DIR: join(root, "nonexistent-agent"), PI_OFFLINE: "1" } });
 		const result = JSON.parse(stdout);
 		assert.deepEqual(result.results.map((row: any) => row.success), [true, true, true]);
 		assert.deepEqual(result.results.map((row: any) => row.reasoningTokens), [4, 10, 2]);
