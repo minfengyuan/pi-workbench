@@ -24,6 +24,14 @@ Security invariants:
 
 The extension itself runs with host privileges and must be installed only from a trusted source. `--sandbox=off` intentionally provides no isolation.
 
+## Adaptive evaluator data boundary
+
+Adaptive Reasoning is disabled by default and may be enabled through global configuration, an explicit CLI flag, or a session command. Project configuration cannot enable it. When enabled, Host Pi sends bounded user goals, public assistant text, recent tool call previews/results, and model/effort metadata to OpenRouter's TypeSafe Jev evaluator. Pi resolves the OpenRouter credential; no second credential file is introduced.
+
+The projection excludes private thinking, image/binary blocks, provider payloads and headers, environment objects, and credential objects. It does not read extra files to gather evaluator context or write raw evaluator requests to logs. These structural exclusions are not secret detection: a user prompt, tool argument, file excerpt, or tool result may already contain a secret and be sent as public text. Enable only when this transfer is acceptable for the task and repository.
+
+Gondolin's guest network policy does not govern this Host extension's HTTP requests. `--sandbox=dev` therefore does not prevent tool output from being sent to Jev. The evaluator cannot authorize tools, expand permission modes, or change sandbox policy. Its recommendations select only a supported thinking level and a bounded generation lease. Invalid or failed recommendations restore the user's baseline without stopping the main agent; this is a performance preference, not a correctness or security gate.
+
 ## Not yet implemented
 
 Dynamic network grants, automatic dev-server detection, secret brokers, cloud credentials, and alternate backends are outside this MVP. The real-VM integration gate covers core env/socket, commit, push-deny, disposable-workspace, and teardown invariants; broader filesystem, process-exhaustion, and network redirect matrices remain required before marking the sandbox stable.

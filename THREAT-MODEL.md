@@ -17,6 +17,12 @@ Permission Mode intercepts Agent tool calls before execution, applies branch-awa
 
 A launch-time snapshot is created in a standalone `git clone --no-hardlinks`. Tracked binary changes and safe non-ignored untracked files are included; `.env`, key material, `.pi`, symlinks, and ignored files are excluded. Only that clone is mounted into a Gondolin micro-VM. Tool classification and interception fail closed. Network and environment access are allowlisted. Host apply is an explicit user command with conflict checks.
 
+## Adaptive evaluator
+
+Opt-in Adaptive Reasoning adds an external data recipient: OpenRouter and the pinned TypeSafe Jev provider. Repository and tool text remain untrusted evidence and may attempt prompt injection into effort/lease questions. Typed choices, model/provider validation, supported effort validation, bounded leases, request budgets, cancellation, and baseline fallback constrain the recommendation's effect; they do not establish the truth of the recommendation.
+
+Only public user/assistant text, bounded recent tool previews, and model metadata are projected. Private thinking, binary content, provider headers/payloads, environment objects, and credential objects are excluded. Public text can still contain sensitive material or secrets. Sandbox network isolation applies to guest tools, not to the Host evaluator request. Global/session opt-in is the control for this separate data transfer; a repository cannot silently enable it through project YAML.
+
 ## Residual risk
 
 Permission Mode shares the Host Pi process with every loaded extension. Another extension, a custom tool implementation, or code invoked through an approved shell command can bypass its policy. Regex-based Shell classification cannot prove filesystem confinement, read-only network tools can transmit user-provided query data, and global custom-tool classifications are explicit trust decisions. Strict handling of untrusted code requires Gondolin or an external sandbox.
