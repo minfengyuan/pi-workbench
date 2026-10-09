@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { decisionRequest, JevClient, validateDecision } from "../extensions/adaptive-reasoning/jev.ts";
-const state = { model: "test", supportedEfforts: ["low", "high"], latestUserPrompt: "goal", priorUserPrompts: [], omittedOlderUserPrompts: 0, publicNotes: [], omittedOlderPublicNotes: 0, recentToolCalls: [], omittedOlderToolCalls: 0, step: 0, previousEffort: "medium", newToolFailures: 0 };
+const state = { model: "test", supportedEfforts: ["low", "high"], latestUserPrompt: "goal", compactionSummary: "", priorUserPrompts: [], omittedOlderUserPrompts: 0, publicNotes: [], omittedOlderPublicNotes: 0, recentToolCalls: [], omittedOlderToolCalls: 0, step: 0, previousEffort: "medium", newToolFailures: 0 };
 const valid = { model: "typesafe/jev-1.13", provider: "TypeSafe", answers: { effort: { type: "choice", choice: "high" }, lease: { type: "choice", choice: "2" } } };
 test("typed decisions pin provider and use only supported choices", async () => {
 	const request = decisionRequest(state, 2) as any;

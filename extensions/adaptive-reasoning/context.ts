@@ -4,6 +4,8 @@ export interface EvaluatorState {
 	model: string;
 	supportedEfforts: string[];
 	latestUserPrompt: string;
+	/** Latest compaction summary in the projection (older summaries are not model-visible); "" if none. */
+	compactionSummary: string;
 	priorUserPrompts: string[];
 	omittedOlderUserPrompts: number;
 	publicNotes: string[];
@@ -14,11 +16,12 @@ export interface EvaluatorState {
 	previousEffort: string;
 	newToolFailures: number;
 }
-type ProjectedFields = "priorUserPrompts" | "omittedOlderUserPrompts" | "publicNotes" | "omittedOlderPublicNotes" | "recentToolCalls" | "omittedOlderToolCalls";
+type ProjectedFields = "compactionSummary" | "priorUserPrompts" | "omittedOlderUserPrompts" | "publicNotes" | "omittedOlderPublicNotes" | "recentToolCalls" | "omittedOlderToolCalls";
 
 /** Local o200k_base token budgets. Newest content is kept; older content is counted, not sent. */
 export const CONTEXT_BUDGETS = {
 	latestUserPrompt: 4_000,
+	compactionSummary: 2_000,
 	priorUserPrompts: 3_000,
 	publicNotes: 4_000,
 	historyItem: 1_000,
@@ -74,17 +77,20 @@ function overStateBudget(state: EvaluatorState): boolean {
 }
 /**
  * Build bounded evaluator context from Pi's projected, model-visible messages.
- * Only user text, public assistant text blocks and recent tool previews are used;
- * thinking, images, headers and other message fields are never copied.
+ * Only user text, public assistant text blocks, the latest compaction summary and
+ * recent tool previews are used; thinking, images, headers, branch summaries,
+ * system and extension messages and other message fields are never copied.
  */
 export function buildEvaluatorState(messages: readonly unknown[], metadata: Omit<EvaluatorState, ProjectedFields>): EvaluatorState {
 	const users: string[] = [], notes: string[] = [];
+	let summary = "";
 	const calls: { id: string; name: string; arguments: unknown }[] = [];
 	const results = new Map<string, { content: unknown; isError: boolean }>();
 	for (const raw of messages) {
 		if (!raw || typeof raw !== "object") continue;
 		const m = raw as Record<string, any>;
 		if (m.role === "user") users.push(textContent(m.content));
+		if (m.role === "compactionSummary" && typeof m.summary === "string") summary = m.summary;
 		if (m.role === "assistant") {
 			const text = textContent(m.content); if (text) notes.push(text);
 			if (Array.isArray(m.content)) for (const block of m.content) {
@@ -100,18 +106,22 @@ export function buildEvaluatorState(messages: readonly unknown[], metadata: Omit
 	const state: EvaluatorState = {
 		...metadata,
 		latestUserPrompt: truncateMiddle(metadata.latestUserPrompt, CONTEXT_BUDGETS.latestUserPrompt),
+		compactionSummary: truncateMiddle(summary, CONTEXT_BUDGETS.compactionSummary),
 		priorUserPrompts: prior.kept, omittedOlderUserPrompts: prior.omitted,
 		publicNotes: publicNotes.kept, omittedOlderPublicNotes: publicNotes.omitted,
 		recentToolCalls: recent.map(({ id, name, arguments: args }) => ({ name, arguments: truncateToolResult(JSON.stringify(args)), result: truncateToolResult(textContent(results.get(id)?.content)), isError: results.get(id)?.isError ?? false })),
 		omittedOlderToolCalls: calls.length - recent.length,
 	};
-	// Escaping or byte-heavy tokens can still overflow; shed oldest history first.
+	// Escaping or byte-heavy tokens can still overflow. Drop order: oldest verbatim
+	// history (assistant text / user prompts alternately), then the compaction
+	// summary, then oldest tool previews (the freshest evidence for effort).
 	// If only the latest prompt and metadata remain, serializeRequest fails closed.
 	let dropNote = true;
 	while (overStateBudget(state)) {
 		const note = state.publicNotes.length > 0 && (dropNote || state.priorUserPrompts.length === 0);
 		if (note) { state.publicNotes.shift(); state.omittedOlderPublicNotes++; }
 		else if (state.priorUserPrompts.length) { state.priorUserPrompts.shift(); state.omittedOlderUserPrompts++; }
+		else if (state.compactionSummary) state.compactionSummary = "";
 		else if (state.recentToolCalls.length) { state.recentToolCalls.shift(); state.omittedOlderToolCalls++; }
 		else break;
 		dropNote = !dropNote;

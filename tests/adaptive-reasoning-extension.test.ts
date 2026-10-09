@@ -176,7 +176,8 @@ test("evaluator history follows Pi's session projection, not raw branch entries"
 	const assistant = (text: string) => ({ role: "assistant", content: [{ type: "thinking", thinking: "PRIVATE-THOUGHT" }, { type: "text", text }], api: "openai-responses", provider: "openai", model: "gpt-5.4", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() }) as any;
 	sm.appendMessage(user("COMPACTED-AWAY goal")); sm.appendMessage(assistant("COMPACTED-AWAY note"));
 	const kept = sm.appendMessage(user("kept goal"));
-	sm.appendCompaction("summary", kept, 1000);
+	sm.appendCompaction("COMPACTION-SUMMARY of earlier work", kept, 1000);
+	sm.appendCustomMessageEntry("other-extension", "EXTENSION-MESSAGE", true);
 	const secret = sm.appendMessage(user("OMITTED-SECRET goal"));
 	const replaced = sm.appendMessage(assistant("REPLACED-ORIGINAL note"));
 	sm.appendContextEdit(secret, null);
@@ -189,7 +190,8 @@ test("evaluator history follows Pi's session projection, not raw branch entries"
 	assert.deepEqual(state.priorUserPrompts, ["kept goal"]);
 	assert.deepEqual(state.publicNotes, ["replacement note"]);
 	assert.equal(state.latestUserPrompt, "current goal");
-	for (const hidden of ["COMPACTED-AWAY", "OMITTED-SECRET", "REPLACED-ORIGINAL", "PRIVATE-THOUGHT", "summary"]) assert.equal(json.includes(hidden), false, hidden);
+	assert.equal(state.compactionSummary, "COMPACTION-SUMMARY of earlier work");
+	for (const hidden of ["COMPACTED-AWAY", "OMITTED-SECRET", "REPLACED-ORIGINAL", "PRIVATE-THOUGHT", "EXTENSION-MESSAGE"]) assert.equal(json.includes(hidden), false, hidden);
 });
 test("long sessions keep the evaluator working with a bounded request body", async (t) => {
 	const bodies: string[] = [];
