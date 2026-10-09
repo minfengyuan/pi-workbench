@@ -1,6 +1,6 @@
 # Adaptive Reasoning
 
-An independent, opt-in extension that chooses the main model's thinking level at generation boundaries. It requires Pi 1.0.2 or compatible later 1.x releases. Permission Mode, Plan Mode and Sandbox do not control its decisions or network access.
+An independent, opt-in extension that chooses the main model's thinking level at generation boundaries. This package targets Pi 1.1.0. Permission Mode, Plan Mode and Sandbox do not control its decisions or network access.
 
 ## Enable
 
@@ -24,9 +24,9 @@ The flag overrides the global enable default. `/adaptive-reasoning on|off|status
 
 The evaluator is OpenRouter `typesafe/jev-1.13`, restricted to TypeSafe with provider fallback disabled. Two typed Choice questions select a supported effort and a lease of 1, 2, 5 or 10 generations. `off` maps to `none`. Choices always follow the main model's capabilities; nonreasoning models never call Jev.
 
-The first decision runs in `before_agent_start`; subsequent decisions run in awaited `turn_end` handlers before the next generation snapshot. A generation with several parallel calls consumes one lease step. Input, failures, model selection, compaction and tree navigation cancel leases. Queued input restores baseline until the real user message enters the branch.
+The first decision runs in `before_agent_start`; subsequent decisions run in awaited `turn_end` handlers before the next generation snapshot. A generation with several parallel calls consumes one lease step. Input, failures, model selection, compaction and tree navigation cancel leases. Queued input restores baseline until the real user message reaches awaited `message_end`, which evaluates it before the next request snapshot. The ordinary initial user message is not evaluated twice.
 
-Changing thinking manually (or from another extension) updates baseline and pauses automatic decisions for the current task. The next task resumes evaluation. Jev failures discard the lease and return to baseline for the current task; the next task retries. Disabling, settled tasks, session restoration and normal exit also restore baseline. Levels are clamped to the selected model without changing the user's requested baseline. Dynamic calls never persist Pi's global thinking default.
+Changing thinking manually (or from another extension) updates baseline and pauses automatic decisions for the current task. The next task resumes evaluation. Jev failures discard the lease and return to baseline for the current task; the next task retries. Disabling, settled tasks, session restoration and normal exit also restore baseline. On model selection, Pi’s selected thinking level (including scoped or per-model settings and capability clamping) becomes the new baseline. Automatic model-switch thinking events do not count as manual overrides. Dynamic calls never persist Pi's global thinking default.
 
 HTTP 429/5xx receive at most three attempts inside a 30 second deadline. Other failures, invalid answers, local context limits and cancellation do not switch providers. In-flight decisions are revision checked, so stale results cannot override new user state.
 

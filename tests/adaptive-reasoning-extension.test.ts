@@ -48,7 +48,7 @@ test("Jev errors restore baseline and pause, then retry next task", async (t) =>
 });
 test("nonreasoning model never calls Jev; model clamp does not throw", async (t) => {
 	t.mock.method(globalThis, "fetch", async () => { throw new Error("must not call"); });
-	const h = harness(); await h.run("session_start"); h.setModel({ ...h.ctx.model!, reasoning: false });
+	const h = harness(); await h.run("session_start"); h.setModel({ ...h.ctx.model!, id: "nonreasoning-fixture", reasoning: false }); h.pi.setThinkingLevel("off");
 	await h.run("model_select"); assert.equal(h.level, "off"); await h.run("before_agent_start", { prompt: "goal" }); assert.equal(h.level, "off");
 });
 test("disabled command cancels delayed evaluation and stale response cannot apply", async (t) => {
@@ -63,9 +63,12 @@ test("queued input restores baseline until the user message has entered the bran
 	t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => { calls++; goals.push(JSON.parse(init?.body as string).state.latestUserPrompt); return response("high", "5"); });
 	const h = harness(); h.entries.push({ type: "message", message: { role: "user", content: "first" } });
 	await h.run("session_start"); await h.run("before_agent_start", { prompt: "first" }); assert.equal(h.level, "high");
+	await h.run("message_end", { message: { role: "user", content: "first" } });
 	await h.run("input", { text: "steering" }); assert.equal(h.level, "medium");
 	await h.run("turn_end", { message: {}, toolResults: [{}] }); assert.equal(calls, 1);
-	h.entries.push({ type: "message", message: { role: "user", content: [{ type: "text", text: "steering" }] } });
+	const message = { role: "user", content: [{ type: "text", text: "steering" }] };
+	await h.run("message_end", { message });
+	h.entries.push({ type: "message", message });
 	await h.run("turn_end", { message: {}, toolResults: [{}] }); assert.equal(calls, 2); assert.deepEqual(goals, ["first", "steering"]);
 });
 test("restored branch state selects its baseline and never restores an old lease", async (t) => {
@@ -129,14 +132,24 @@ test("invalid global configuration disables evaluation despite an on flag", asyn
 
 test("a no-change model switch cannot swallow a later manual thinking change", async () => {
 	const h = harness(); await h.run("session_start");
-	const reasoningModel = h.ctx.model!;
-	h.pi.setThinkingLevel("high");
-	h.setModel({ ...reasoningModel, id: "nonreasoning-fixture", reasoning: false });
-	await h.run("model_select"); assert.equal(h.level, "off");
-	h.setModel(reasoningModel);
-	await h.run("model_select"); assert.equal(h.level, "high");
+	h.setModel({ ...h.ctx.model!, id: "another-reasoning-model" });
+	await h.run("model_select"); assert.equal(h.level, "medium");
 	h.pi.setThinkingLevel("off");
 	await h.run("agent_settled"); assert.equal(h.level, "off");
+});
+
+for (const delayed of [false, true]) test(`model-selected baseline survives automatic thinking events (delayed=${delayed})`, async (t) => {
+	let calls = 0; t.mock.method(globalThis, "fetch", async () => { calls++; return response("high", "2"); });
+	const h = harness(delayed); await h.run("session_start");
+	await h.run("before_agent_start", { prompt: "first" }); h.flush();
+	h.setModel({ ...h.ctx.model!, id: "another-reasoning-model" });
+	h.pi.setThinkingLevel("low"); await h.run("model_select"); h.flush();
+	assert.equal(h.level, "low");
+	await h.run("turn_end", { message: {}, toolResults: [{}] }); h.flush();
+	assert.equal(calls, 2); assert.equal(h.level, "high");
+	await h.run("agent_settled"); h.flush(); assert.equal(h.level, "low");
+	h.pi.setThinkingLevel("medium"); h.flush();
+	await h.run("agent_settled"); h.flush(); assert.equal(h.level, "medium");
 });
 
 
