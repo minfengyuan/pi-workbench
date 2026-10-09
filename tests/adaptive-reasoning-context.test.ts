@@ -76,3 +76,47 @@ test("newestWithinBudget keeps chronological order and counts omissions", () => 
 	assert.equal(result.kept.length, 1); assert.equal(result.omitted, 2); assert.ok(tokens(result.kept[0]) <= 1_000);
 	assert.deepEqual(newestWithinBudget(["a", "b"], 1_000).kept, ["a", "b"]);
 });
+const base = { model: "test", supportedEfforts: ["low", "high"], latestUserPrompt: "current", step: 1, previousEffort: "low", newToolFailures: 0 };
+test("compaction summary is projected under its own head/tail budget", () => {
+	assert.equal(buildEvaluatorState([{ role: "user", content: "x" }], base).compactionSummary, "");
+	const state = buildEvaluatorState([{ role: "compactionSummary", summary: `SUM-HEAD ${"done ".repeat(10_000)} SUM-TAIL`, tokensBefore: 90_000 }, { role: "user", content: "after" }], base);
+	assert.ok(tokens(state.compactionSummary) <= CONTEXT_BUDGETS.compactionSummary);
+	assert.match(state.compactionSummary, /^SUM-HEAD[\s\S]*\[Text truncated: middle omitted\][\s\S]*SUM-TAIL$/);
+	assert.deepEqual(state.priorUserPrompts, ["after"]);
+	assert.equal("tokensBefore" in state, false);
+});
+test("branch summaries, system and extension messages are not projected", () => {
+	const state = buildEvaluatorState([
+		{ role: "system", content: "SYSTEM-CHECKPOINT" }, { role: "branchSummary", summary: "BRANCH-SUMMARY", fromId: "x" },
+		{ role: "custom", customType: "ext", content: "EXTENSION-TEXT", display: true }, { role: "bashExecution", command: "BASH-CMD", output: "BASH-OUT" },
+		{ role: "compactionSummary", summary: "kept summary" },
+	], base);
+	const json = JSON.stringify(state);
+	for (const hidden of ["SYSTEM-CHECKPOINT", "BRANCH-SUMMARY", "EXTENSION-TEXT", "BASH-"]) assert.equal(json.includes(hidden), false, hidden);
+	assert.equal(state.compactionSummary, "kept summary");
+});
+test("worst-case session with a huge compaction summary stays within the request budget", () => {
+	const huge = "goal ".repeat(50_000);
+	const state = buildEvaluatorState([{ role: "compactionSummary", summary: "summary ".repeat(100_000) }, ...longSession(500, 5_000), { role: "user", content: huge }], { ...base, latestUserPrompt: huge, supportedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] });
+	assert.ok(state.compactionSummary.length > 0);
+	const body = serializeRequest(decisionRequest(state, 10));
+	assert.ok(tokens(body) <= 28_000); assert.ok(Buffer.byteLength(body) <= 2_100_000);
+});
+test("over-budget drop order: history, then compaction summary, then oldest tool previews", () => {
+	const esc = "\u0001".repeat(4_000);
+	const build = (heavyTools: number) => {
+		const messages: unknown[] = [{ role: "compactionSummary", summary: esc }];
+		for (let i = 0; i < 6; i++) messages.push({ role: "user", content: `u${i} ${esc}` }, { role: "assistant", content: [{ type: "text", text: `n${i} ${esc}` }, { type: "toolCall", id: `c${i}`, name: `t${i}`, arguments: { x: i < heavyTools ? esc : "y" } }] }, { role: "toolResult", toolCallId: `c${i}`, content: [{ type: "text", text: i < heavyTools ? esc : "ok ".repeat(2_000) }] });
+		const state = buildEvaluatorState(messages, base);
+		assert.ok(tokens(JSON.stringify(state)) <= CONTEXT_BUDGETS.stateTokens);
+		return state;
+	};
+	const historyOnly = build(4);
+	assert.equal(historyOnly.publicNotes.length + historyOnly.priorUserPrompts.length, 0);
+	assert.notEqual(historyOnly.compactionSummary, ""); assert.equal(historyOnly.recentToolCalls.length, 6);
+	const summaryToo = build(5);
+	assert.equal(summaryToo.compactionSummary, ""); assert.equal(summaryToo.recentToolCalls.length, 6);
+	const toolsToo = build(6);
+	assert.equal(toolsToo.compactionSummary, ""); assert.equal(toolsToo.recentToolCalls.length, 5);
+	assert.equal(toolsToo.recentToolCalls[0].name, "t1"); assert.equal(toolsToo.omittedOlderToolCalls, 1);
+});
