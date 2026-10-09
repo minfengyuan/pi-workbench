@@ -72,7 +72,7 @@ ModelRuntime.create = async () => {
 };
 globalThis.fetch = async (url) => {
  if(String(url)!=='https://openrouter.ai/api/alpha/decisions')throw new Error('Unexpected network');
- return Response.json({model:'typesafe/jev-1.13',provider:'TypeSafe',answers:{effort:{type:'choice',choice:'low'},lease:{type:'choice',choice:'1'}},usage:{cost:0.01}});
+ return Response.json({model:'typesafe/jev-1.13',provider:'TypeSafe',answers:{effort:{type:'choice',choice:'low'},lease:{type:'choice',choice:'1'}},usage:{cost:0.01,prompt_tokens:300,completion_tokens:1}});
 };
 `);
 		const { stdout } = await run(process.execPath, ["--import", pathToFileURL(preload).href, "scripts/compare-adaptive-reasoning.mjs", workload, "--live"], { env: { ...process.env, PI_CODING_AGENT_DIR: join(root, "nonexistent-agent"), PI_OFFLINE: "1" } });
@@ -81,6 +81,8 @@ globalThis.fetch = async (url) => {
 		assert.deepEqual(result.results.map((row: any) => row.reasoningTokens), [4, 10, 2]);
 		assert.deepEqual(result.results.map((row: any) => row.jevCalls), [0, 0, 2]);
 		assert.equal(result.results[2].jevReportedCost, 0.02);
+		assert.deepEqual(result.results.map((row: any) => [row.jevInputTokens, row.jevOutputTokens]), [[0, 0], [0, 0], [600, 2]]);
+		assert.ok(result.results.every((row: any) => Number.isInteger(row.jevLatencyMs)));
 		assert.equal(await readFile(join(root, "baseline.txt"), "utf8"), "dirty content excluded");
 		await assert.rejects(readFile(join(root, "result.txt")));
 	} finally { await rm(root, { recursive: true, force: true }); }
