@@ -49,14 +49,21 @@ async function main() {
 		for (const task of spec.tasks) for (const variant of variants) {
 			const root = await mkdtemp(join(tmpdir(), "pi-reasoning-compare-"));
 			let session;
-			let calls = 0, jevCost = 0, missingCosts = 0;
+			let calls = 0, jevCost = 0, missingCosts = 0, jevLatencyMs = 0, jevInputTokens = 0, jevOutputTokens = 0, missingTokens = 0;
 			globalThis.fetch = async (input, options) => {
 				const evaluator = String(input) === "https://openrouter.ai/api/alpha/decisions";
 				if (evaluator) calls++;
+				const started = performance.now();
 				const response = await originalFetch(input, options);
 				if (evaluator) {
-					try { const value = await response.clone().json(); if (Number.isFinite(value.usage?.cost)) jevCost += value.usage.cost; else missingCosts++; }
-					catch { missingCosts++; }
+					try {
+						const value = await response.clone().json();
+						jevLatencyMs += performance.now() - started;
+						if (Number.isFinite(value.usage?.cost)) jevCost += value.usage.cost; else missingCosts++;
+						const inputTokens = value.usage?.prompt_tokens ?? value.usage?.input_tokens, outputTokens = value.usage?.completion_tokens ?? value.usage?.output_tokens;
+						if (Number.isFinite(inputTokens) && Number.isFinite(outputTokens)) { jevInputTokens += inputTokens; jevOutputTokens += outputTokens; } else missingTokens++;
+					}
+					catch { missingCosts++; missingTokens++; jevLatencyMs += performance.now() - started; }
 				}
 				return response;
 			};
@@ -84,7 +91,8 @@ async function main() {
 				try { await run(task.verify.command, task.verify.args, { cwd, timeout: 120_000, maxBuffer: 1024 * 1024 }); verified = true; } catch { /* Record failure without dumping output or secrets. */ }
 				rows.push({ task: task.name, variant, commit, elapsedMs, success: verified && !agentFailed,
 					reasoningTokens: usage.length && usage.every((value) => typeof value?.reasoning === "number") ? usage.reduce((n, value) => n + value.reasoning, 0) : null,
-					mainReportedCost: usage.reduce((n, value) => n + (value?.cost?.total ?? 0), 0), jevCalls: calls, jevReportedCost: missingCosts ? null : jevCost });
+					mainReportedCost: usage.reduce((n, value) => n + (value?.cost?.total ?? 0), 0), jevCalls: calls, jevReportedCost: missingCosts ? null : jevCost,
+					jevLatencyMs: Math.round(jevLatencyMs), jevInputTokens: missingTokens ? null : jevInputTokens, jevOutputTokens: missingTokens ? null : jevOutputTokens });
 			} finally { session?.dispose(); await rm(root, { recursive: true, force: true }); }
 		}
 		console.log(JSON.stringify({ ...plan, results: rows }, null, 2));
