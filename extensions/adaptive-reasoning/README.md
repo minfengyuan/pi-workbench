@@ -1,6 +1,6 @@
 # Adaptive Reasoning
 
-An independent, opt-in extension that chooses the main model's thinking level at generation boundaries. It requires Pi 1.0.2 or compatible later 1.x releases. Permission Mode, Plan Mode and Sandbox do not control its decisions or network access.
+An independent, opt-in extension that chooses the main model's thinking level at generation boundaries. This package targets Pi 1.1.0. Permission Mode, Plan Mode and Sandbox do not control its decisions or network access.
 
 ## Enable
 

@@ -8,10 +8,10 @@
     "extensions": ["./extensions"]
   },
   "peerDependencies": {
-    "@earendil-works/pi-agent-core": "^1.0.2",
-    "@earendil-works/pi-ai": "^1.0.2",
-    "@earendil-works/pi-coding-agent": "^1.0.2",
-    "@earendil-works/pi-tui": "^1.0.2"
+    "@earendil-works/pi-agent-core": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0"
   },
   "dependencies": {
     "@earendil-works/gondolin": "0.12.0",
