@@ -1,0 +1,25 @@
+{
+  "maxLeaseSteps": 10,
+  "cases": [
+    {
+      "name": "trivial-rename",
+      "metadata": { "latestUserPrompt": "Rename the variable `cnt` to `count` in src/util.ts.", "supportedEfforts": ["none", "low", "medium", "high"] },
+      "expect": { "effort": ["none", "low"] }
+    },
+    {
+      "name": "concurrency-bug",
+      "metadata": { "latestUserPrompt": "Intermittent deadlock between the cache refresher and request handlers; logs attached. Find the root cause and fix it without breaking the lock ordering invariant.", "supportedEfforts": ["none", "low", "medium", "high"], "newToolFailures": 2 },
+      "expect": { "effort": ["high"], "lease": ["1", "2"] }
+    },
+    {
+      "name": "routine-continuation",
+      "messages": [
+        { "role": "user", "content": "Add unit tests for parseDate covering ISO, RFC 2822 and invalid input." },
+        { "role": "assistant", "content": [{ "type": "text", "text": "I'll add three tests." }, { "type": "toolCall", "id": "t1", "name": "write", "arguments": { "path": "tests/date.test.ts" } }] },
+        { "role": "toolResult", "toolCallId": "t1", "content": [{ "type": "text", "text": "wrote tests/date.test.ts" }], "isError": false }
+      ],
+      "metadata": { "latestUserPrompt": "Add unit tests for parseDate covering ISO, RFC 2822 and invalid input.", "step": 1, "previousEffort": "low" },
+      "expect": { "effort": ["none", "low", "medium"] }
+    }
+  ]
+}

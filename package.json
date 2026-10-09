@@ -27,6 +27,7 @@
     "test": "node --test tests/*.test.ts",
     "test:integration": "node --test tests/integration/*.test.ts",
     "typecheck": "tsc -p tsconfig.json",
-    "compare:adaptive": "node scripts/compare-adaptive-reasoning.mjs"
+    "compare:adaptive": "node scripts/compare-adaptive-reasoning.mjs",
+    "benchmark:jev": "node scripts/benchmark-jev-paths.mjs"
   }
 }
