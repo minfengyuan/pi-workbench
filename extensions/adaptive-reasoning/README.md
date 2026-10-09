@@ -34,7 +34,17 @@ Footer examples: `reason:AUTO·H·2`, `reason:MANUAL`, `reason:JEV!`, `reason:OF
 
 ## External data boundary
 
-Enabling sends user goals, assistant **public text**, recent tool names/argument previews/result previews and model/effort metadata to OpenRouter/TypeSafe. Only the six most recent tool calls are projected; each argument and result preview is capped at 1,000 local `o200k_base` tokens with head/tail preservation. The entire serialized evaluator request must stay below 28,000 local tokens and 2,100,000 bytes, or it is rejected locally.
+Enabling sends user goals, assistant **public text**, the latest compaction summary, recent tool names/argument previews/result previews and model/effort metadata to OpenRouter/TypeSafe. History comes from Pi's `buildSessionProjection()`, so content removed by compaction or omitted/replaced by context edits is not sent; after compaction, only Pi's latest summary of it is sent. Branch summaries, system, extension and bash-execution messages are not sent. Budgets use local `o200k_base` tokens with head/tail preservation and a visible truncation marker:
+
+| Content | Budget |
+| --- | --- |
+| Latest user prompt | 4,000 |
+| Earlier user prompts | 3,000 total, newest first, ≤1,000 each |
+| Assistant public text | 4,000 total, newest first, ≤1,000 each |
+| Latest compaction summary | 2,000 |
+| Tool calls | six most recent; argument and result previews ≤1,000 each |
+
+Older history is reported only as `omittedOlderUserPrompts`, `omittedOlderPublicNotes` and `omittedOlderToolCalls` counts. If escaping still makes the serialized state exceed 26,000 tokens or 2,000,000 bytes, the oldest assistant text and user prompts are dropped alternately, then the compaction summary, then the oldest tool previews. The entire serialized evaluator request must stay below 28,000 local tokens and 2,100,000 bytes, or it is rejected locally and baseline is restored.
 
 Thinking blocks, images/binary content, raw provider payloads, credential objects, environment variables and request headers are not projected. The extension does not read extra files for the evaluator. This is a structural filter, **not secret detection**: secrets included in user text, public assistant text, tool arguments or tool output can still be transmitted. Treat enablement as consent to this external transfer. No original evaluator body or credentials are logged by this extension.
 

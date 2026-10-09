@@ -26,7 +26,7 @@ The extension itself runs with host privileges and must be installed only from a
 
 ## Adaptive evaluator data boundary
 
-Adaptive Reasoning is disabled by default and may be enabled through global configuration, an explicit CLI flag, or a session command. Project configuration cannot enable it. When enabled, Host Pi sends bounded user goals, public assistant text, recent tool call previews/results, and model/effort metadata to OpenRouter's TypeSafe Jev evaluator. Pi resolves the OpenRouter credential; no second credential file is introduced.
+Adaptive Reasoning is disabled by default and may be enabled through global configuration, an explicit CLI flag, or a session command. Project configuration cannot enable it. When enabled, Host Pi sends token-budgeted user goals and history, budgeted public assistant text (newest first, taken from Pi's model-visible session projection, so compacted-away or context-edited content is excluded), the latest compaction summary capped at 2,000 local tokens (a model-written digest of earlier conversation, which may restate sensitive details from it), recent tool call previews/results, and model/effort metadata to OpenRouter's TypeSafe Jev evaluator. Pi resolves the OpenRouter credential; no second credential file is introduced.
 
 The projection excludes private thinking, image/binary blocks, provider payloads and headers, environment objects, and credential objects. It does not read extra files to gather evaluator context or write raw evaluator requests to logs. These structural exclusions are not secret detection: a user prompt, tool argument, file excerpt, or tool result may already contain a secret and be sent as public text. Enable only when this transfer is acceptable for the task and repository.
 

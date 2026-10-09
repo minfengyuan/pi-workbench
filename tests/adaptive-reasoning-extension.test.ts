@@ -3,8 +3,9 @@ import test, { before, after } from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { countTokens } from "gpt-tokenizer/encoding/o200k_base";
 import { getModel } from "@earendil-works/pi-ai/compat";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import extension from "../extensions/adaptive-reasoning/index.ts";
 let agentDir: string;
 const previousDir = process.env.PI_CODING_AGENT_DIR;
@@ -20,7 +21,7 @@ function harness(delayed = false) {
 	const entries: any[] = []; const sent: any[] = []; const pending: (() => void)[] = [];
 	let level = "medium", model = getModel("openai", "gpt-5.4");
 	const ctx = { model, hasUI: false, isIdle: () => false, hasPendingMessages: () => false,
-		modelRegistry: { getApiKeyForProvider: async () => "fake" }, sessionManager: { getBranch: () => entries },
+		modelRegistry: { getApiKeyForProvider: async () => "fake" }, sessionManager: { getBranch: () => entries, buildSessionProjection: () => ({ entries: [], messages: entries.filter((e) => e.type === "message").map((e) => e.message), thinkingLevel: level, model: null }) },
 		ui: { setStatus() {}, notify() {}, select: async () => undefined } } as unknown as ExtensionContext;
 	const pi = { registerFlag() {}, registerCommand: (name: string, command: any) => commands.set(name, command), getFlag: () => "on",
 		sendMessage: (message: any, options: any) => sent.push({ message, options }),
@@ -166,4 +167,46 @@ test("disabling cancels evaluation even while Pi credential resolution is pendin
 	try { await Promise.race([evaluating, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("Evaluation failed to cancel")), 100); })]); }
 	finally { clearTimeout(timeout); resolve("fake"); }
 	assert.equal(h.level, "medium"); assert.equal(calls, 0);
+});
+test("evaluator history follows Pi's session projection, not raw branch entries", async (t) => {
+	const bodies: any[] = [];
+	t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => { bodies.push(JSON.parse(init?.body as string)); return response("high", "1"); });
+	const sm = SessionManager.inMemory(agentDir);
+	const user = (text: string) => ({ role: "user", content: text, timestamp: Date.now() }) as any;
+	const assistant = (text: string) => ({ role: "assistant", content: [{ type: "thinking", thinking: "PRIVATE-THOUGHT" }, { type: "text", text }], api: "openai-responses", provider: "openai", model: "gpt-5.4", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() }) as any;
+	sm.appendMessage(user("COMPACTED-AWAY goal")); sm.appendMessage(assistant("COMPACTED-AWAY note"));
+	const kept = sm.appendMessage(user("kept goal"));
+	sm.appendCompaction("COMPACTION-SUMMARY of earlier work", kept, 1000);
+	sm.appendCustomMessageEntry("other-extension", "EXTENSION-MESSAGE", true);
+	const secret = sm.appendMessage(user("OMITTED-SECRET goal"));
+	const replaced = sm.appendMessage(assistant("REPLACED-ORIGINAL note"));
+	sm.appendContextEdit(secret, null);
+	sm.appendContextEdit(replaced, { content: "replacement note" });
+	sm.appendMessage(user("current goal"));
+	const h = harness(); (h.ctx as any).sessionManager = sm;
+	await h.run("session_start"); await h.run("before_agent_start", { prompt: "current goal" });
+	assert.equal(bodies.length, 1);
+	const state = bodies[0].state, json = JSON.stringify(state);
+	assert.deepEqual(state.priorUserPrompts, ["kept goal"]);
+	assert.deepEqual(state.publicNotes, ["replacement note"]);
+	assert.equal(state.latestUserPrompt, "current goal");
+	assert.equal(state.compactionSummary, "COMPACTION-SUMMARY of earlier work");
+	for (const hidden of ["COMPACTED-AWAY", "OMITTED-SECRET", "REPLACED-ORIGINAL", "PRIVATE-THOUGHT", "EXTENSION-MESSAGE"]) assert.equal(json.includes(hidden), false, hidden);
+});
+test("long sessions keep the evaluator working with a bounded request body", async (t) => {
+	const bodies: string[] = [];
+	t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => { bodies.push(init?.body as string); return response("high", "1"); });
+	const h = harness();
+	for (let i = 0; i < 200; i++) {
+		h.entries.push({ type: "message", message: { role: "user", content: `prompt ${i} ${"detail ".repeat(1_500)}` } });
+		h.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "PRIVATE" }, { type: "text", text: `answer ${i} ${"public ".repeat(1_500)}` }] } });
+	}
+	h.entries.push({ type: "message", message: { role: "user", content: "final goal" } });
+	await h.run("session_start"); await h.run("before_agent_start", { prompt: "final goal" });
+	assert.equal(bodies.length, 1); assert.equal(h.level, "high");
+	const body = bodies[0], state = JSON.parse(body).state;
+	assert.ok(countTokens(body, { disallowedSpecial: new Set() }) <= 28_000);
+	assert.match(state.priorUserPrompts.at(-1), /^prompt 199 /); assert.match(state.publicNotes.at(-1), /^answer 199 /);
+	assert.ok(state.omittedOlderUserPrompts > 0 && state.omittedOlderPublicNotes > 0);
+	assert.equal(body.includes("PRIVATE"), false);
 });

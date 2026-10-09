@@ -21,7 +21,7 @@ A launch-time snapshot is created in a standalone `git clone --no-hardlinks`. Tr
 
 Opt-in Adaptive Reasoning adds an external data recipient: OpenRouter and the pinned TypeSafe Jev provider. Repository and tool text remain untrusted evidence and may attempt prompt injection into effort/lease questions. Typed choices, model/provider validation, supported effort validation, bounded leases, request budgets, cancellation, and baseline fallback constrain the recommendation's effect; they do not establish the truth of the recommendation.
 
-Only public user/assistant text, bounded recent tool previews, and model metadata are projected. Private thinking, binary content, provider headers/payloads, environment objects, and credential objects are excluded. Public text can still contain sensitive material or secrets. Sandbox network isolation applies to guest tools, not to the Host evaluator request. Global/session opt-in is the control for this separate data transfer; a repository cannot silently enable it through project YAML.
+Only budgeted public user/assistant text and the latest compaction summary from Pi's model-visible session projection, bounded recent tool previews, and model metadata are projected; long sessions therefore send a bounded, newest-first slice rather than the full history. Private thinking, binary content, provider headers/payloads, environment objects, and credential objects are excluded. Public text can still contain sensitive material or secrets. Sandbox network isolation applies to guest tools, not to the Host evaluator request. Global/session opt-in is the control for this separate data transfer; a repository cannot silently enable it through project YAML.
 
 ## Residual risk
 
