@@ -63,9 +63,12 @@ test("queued input restores baseline until the user message has entered the bran
 	t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => { calls++; goals.push(JSON.parse(init?.body as string).state.latestUserPrompt); return response("high", "5"); });
 	const h = harness(); h.entries.push({ type: "message", message: { role: "user", content: "first" } });
 	await h.run("session_start"); await h.run("before_agent_start", { prompt: "first" }); assert.equal(h.level, "high");
+	await h.run("message_end", { message: { role: "user", content: "first" } });
 	await h.run("input", { text: "steering" }); assert.equal(h.level, "medium");
 	await h.run("turn_end", { message: {}, toolResults: [{}] }); assert.equal(calls, 1);
-	h.entries.push({ type: "message", message: { role: "user", content: [{ type: "text", text: "steering" }] } });
+	const message = { role: "user", content: [{ type: "text", text: "steering" }] };
+	await h.run("message_end", { message });
+	h.entries.push({ type: "message", message });
 	await h.run("turn_end", { message: {}, toolResults: [{}] }); assert.equal(calls, 2); assert.deepEqual(goals, ["first", "steering"]);
 });
 test("restored branch state selects its baseline and never restores an old lease", async (t) => {

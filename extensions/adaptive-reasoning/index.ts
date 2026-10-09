@@ -25,7 +25,7 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 	let configError = false;
 	let request: AbortController | undefined;
 	let inputPending = false;
-	let inputBoundary: unknown;
+	let initialUserPending = false;
 	let currentModel: ExtensionContext["model"];
 	let observedLevel: ThinkingLevel = "medium";
 	let modelTransition: { from: ThinkingLevel; to: ThinkingLevel } | undefined;
@@ -59,7 +59,7 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 		return ctx.sessionManager.getBranch().filter((e) => e.type === "message").map((e) => e.message);
 	}
 	function lastUser(ctx: ExtensionContext): unknown { return messages(ctx).filter((m: any) => m.role === "user").pop(); }
-	async function evaluate(ctx: ExtensionContext): Promise<void> {
+	async function evaluate(ctx: ExtensionContext, incomingMessage?: unknown): Promise<void> {
 		if (!controller.enabled || controller.paused || !ctx.model?.reasoning || configError) { status(ctx); return; }
 		cancel();
 		const revision = controller.revision;
@@ -74,7 +74,10 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 			signal.throwIfAborted();
 			if (!isCurrent()) { cancel(); return; }
 			if (!apiKey) { controller.fail("no OpenRouter credentials"); controller.enabled = false; restore(); persist(); notify(ctx, "Adaptive reasoning disabled: no OpenRouter credentials", "warning"); status(ctx); return; }
-			const state = buildEvaluatorState(messages(ctx), {
+			// message_end is awaited before Pi persists the incoming user message.
+			const history = messages(ctx);
+			if (incomingMessage) history.push(incomingMessage);
+			const state = buildEvaluatorState(history, {
 				model: `${model.provider}/${model.id}`, supportedEfforts: getSupportedThinkingLevels(model).map((l) => l === "off" ? "none" : l),
 				latestUserPrompt: controller.latestUserPrompt, step: controller.step, previousEffort: pi.getThinkingLevel() === "off" ? "none" : pi.getThinkingLevel(), newToolFailures: controller.toolFailures,
 			});
@@ -90,7 +93,7 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 		} finally { if (request === active) request = undefined; status(ctx); }
 	}
 	async function initialize(ctx: ExtensionContext): Promise<void> {
-		cancel(); inputPending = false; controller.paused = undefined;
+		cancel(); inputPending = false; initialUserPending = false; controller.paused = undefined;
 		currentModel = ctx.model; modelTransition = undefined;
 		controller.baseline = pi.getThinkingLevel(); observedLevel = controller.baseline;
 		try { config = await loadConfig(); configError = false; }
@@ -113,27 +116,32 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 	}
 	pi.on("session_start", async (_event, ctx) => { await initialize(ctx); });
 	pi.on("before_agent_start", async (event, ctx) => {
-		cancel(); if (controller.enabled) restore(); controller.newTask(event.prompt); inputPending = false;
+		cancel(); if (controller.enabled) restore(); controller.newTask(event.prompt); inputPending = false; initialUserPending = true;
 		if (controller.enabled) { persist(); await evaluate(ctx); }
 	});
 	pi.on("input", (_event, ctx) => {
-		cancel(); inputPending = !ctx.isIdle(); inputBoundary = lastUser(ctx);
+		cancel(); inputPending = !ctx.isIdle();
 		if (controller.enabled) restore(); status(ctx);
 		return { action: "continue" };
+	});
+	pi.on("message_end", async (event, ctx) => {
+		if (event.message.role !== "user") return;
+		// The ordinary prompt was already evaluated by before_agent_start.
+		if (initialUserPending) { initialUserPending = false; return; }
+		cancel(); if (controller.enabled) restore();
+		const content = event.message.content;
+		const prompt = typeof content === "string" ? content : content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+		controller.newTask(prompt); inputPending = ctx.hasPendingMessages();
+		if (controller.enabled) { persist(); await evaluate(ctx, event.message); }
 	});
 	pi.on("turn_end", async (event, ctx) => {
 		controller.finishGeneration(event.toolResults.filter((r) => r.isError).length);
 		if (!controller.enabled || controller.paused || !ctx.model?.reasoning) { status(ctx); return; }
 		const message = event.message as { stopReason?: string };
 		if (message.stopReason === "error" || message.stopReason === "aborted") return;
-		if (inputPending) {
-			const current = lastUser(ctx);
-			if (current === inputBoundary) { restore(); status(ctx); return; }
-			inputPending = false;
-			const user = current as { content?: unknown };
-			if (typeof user?.content === "string") controller.latestUserPrompt = user.content;
-			else if (Array.isArray(user?.content)) controller.latestUserPrompt = user.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
-		}
+		// Queued input enters the agent after turn_end. Evaluate it at message_end,
+		// before prepareRequest snapshots the next generation's thinking level.
+		if (inputPending) { restore(); status(ctx); return; }
 		if (!event.toolResults.length && !ctx.hasPendingMessages()) return;
 		if (!controller.canReuse()) await evaluate(ctx); else status(ctx);
 	});
@@ -152,9 +160,9 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 		observedLevel = selectedLevel;
 		currentModel = ctx.model; cancel(); if (controller.enabled) restore(); status(ctx);
 	});
-	pi.on("session_compact", (_event, ctx) => { cancel(); inputPending = false; if (controller.enabled) restore(); status(ctx); });
+	pi.on("session_compact", (_event, ctx) => { cancel(); inputPending = false; initialUserPending = false; if (controller.enabled) restore(); status(ctx); });
 	pi.on("session_tree", async (_event, ctx) => { await initialize(ctx); });
-	pi.on("agent_settled", (_event, ctx) => { cancel(); inputPending = false; if (controller.enabled) restore(); status(ctx); });
+	pi.on("agent_settled", (_event, ctx) => { cancel(); inputPending = false; initialUserPending = false; if (controller.enabled) restore(); status(ctx); });
 	pi.on("session_shutdown", () => { cancel(); if (controller.enabled) restore(); });
 	pi.registerCommand("adaptive-reasoning", {
 		description: "Enable, disable or inspect adaptive reasoning",
