@@ -68,8 +68,10 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 		// A model change may clamp the baseline to the new model's capabilities.
 		apply(currentModel ? clampThinkingLevel(currentModel, controller.baseline) : controller.baseline);
 	}
+	// Use Pi's model-visible projection: it honors compaction and context edits,
+	// so omitted/replaced or summarized-away history is never sent to Jev.
 	function messages(ctx: ExtensionContext): unknown[] {
-		return ctx.sessionManager.getBranch().filter((e) => e.type === "message").map((e) => e.message);
+		return [...ctx.sessionManager.buildSessionProjection().messages];
 	}
 	function lastUser(ctx: ExtensionContext): unknown { return messages(ctx).filter((m: any) => m.role === "user").pop(); }
 	async function evaluate(ctx: ExtensionContext, incomingMessage?: unknown): Promise<void> {
