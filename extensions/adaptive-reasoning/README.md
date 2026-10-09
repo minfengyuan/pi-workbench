@@ -50,4 +50,6 @@ Thinking blocks, images/binary content, raw provider payloads, credential object
 
 Sandbox isolates tool execution. It does **not** prevent this Host Pi extension from sending evaluator context over the network. Repository instructions and tool results are untrusted evidence for the evaluator and cannot authorize enabling it.
 
+The extension deliberately keeps its own HTTP client instead of Pi's native `ctx.modelRegistry.classify()`. In Pi 1.1.0 the native path uses a different OpenRouter endpoint, can't verify that TypeSafe served the answer, and follows redirects. See [the comparison](../../docs/adaptive-reasoning-native-jev.md) and `npm run benchmark:jev`.
+
 No cost reduction is guaranteed. Compare task acceptance, main model reasoning tokens, Jev requests/cost and total latency on fixed workloads before drawing conclusions.

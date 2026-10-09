@@ -29,7 +29,16 @@ npm run compare:adaptive -- scripts/adaptive-workload.example.json
 
 Copy the example, set a known Pi provider/model, and point `repository` to a committed workload baseline. All three variants use the same HEAD commit in separate disposable local clones; dirty changes and untracked files are excluded. The live runner disables unrelated extensions, context files, skills, retries, and automatic compaction for comparison. It uses built-in host tools, so use a trusted workload. It does not provide sandbox isolation. Configure any workload dependencies identically in each task prompt.
 
-Adding `--live` explicitly runs billable main-model and evaluator requests, then the workload's verification command. Credentials are read from Pi without writing its auth file; OAuth requiring refresh and custom model definitions are unsupported by this small comparison runner. Results report verification success, reasoning tokens (null when unreported), Jev request count/cost, main-model reported cost, and task latency excluding verification. A failed or missing Jev credential may make Adaptive fall back; inspect the call count. The example is a smoke workload, not evidence of savings. Repeat representative workloads before drawing cost or quality conclusions.
+Adding `--live` explicitly runs billable main-model and evaluator requests, then the workload's verification command. Credentials are read from Pi without writing its auth file; OAuth requiring refresh and custom model definitions are unsupported by this small comparison runner. Results report verification success, reasoning tokens (null when unreported), Jev request count/cost/latency/input and output tokens, main-model reported cost, and task latency excluding verification. A failed or missing Jev credential may make Adaptive fall back; inspect the call count. The example is a smoke workload, not evidence of savings. Repeat representative workloads before drawing cost or quality conclusions.
+
+To compare the production HTTP Jev client with Pi's native `classify()` path on the same evaluator inputs:
+
+```bash
+npm run benchmark:jev -- scripts/jev-cases.example.json            # offline plan
+npm run benchmark:jev -- my-cases.json --live --repeat 3           # billable
+```
+
+Each case gives a ready evaluator `state` or raw Pi `messages` (built through the real context budgets), plus optional expected `effort`/`lease` sets. The report covers, per path: valid-answer rate, error categories, effort/lease accuracy, p50/p95/mean latency, how many answers were served by TypeSafe, answer structure, token usage, OpenRouter-reported cost, Pi catalog cost (native only), and cross-path agreement. The native path is benchmark-only; [docs/adaptive-reasoning-native-jev.md](./docs/adaptive-reasoning-native-jev.md) explains why the extension still uses the HTTP client.
 
 ## Permission modes
 
