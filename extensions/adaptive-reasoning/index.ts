@@ -28,7 +28,8 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 	let initialUserPending = false;
 	let currentModel: ExtensionContext["model"];
 	let observedLevel: ThinkingLevel = "medium";
-	let modelTransition: { from: ThinkingLevel; to: ThinkingLevel } | undefined;
+	const modelTransitions: { from: ThinkingLevel; to: ThinkingLevel }[] = [];
+	let modelThinkingObserved = false;
 
 	pi.registerFlag("adaptive-reasoning", { description: "Adaptive reasoning: on or off (session only)", type: "string", default: "" });
 	function cancel(): void { request?.abort(); request = undefined; controller.invalidate(); }
@@ -51,7 +52,19 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 		observedLevel = pi.getThinkingLevel();
 		if (observedLevel !== level) throw new Error("Pi did not apply requested thinking level");
 	}
+	function observeManualSelection(): void {
+		const level = pi.getThinkingLevel();
+		if (level === observedLevel) return;
+		// setThinkingLevel changes state synchronously, but its event can be delayed
+		// by another extension. Never restore/evaluate over that newer user choice.
+		// Its eventual notification has already been accounted for, even if a new
+		// task starts before another extension releases that notification.
+		controller.expectedTransitions.push({ from: observedLevel, to: level });
+		observedLevel = level; cancel(); controller.baseline = level;
+		controller.paused = "manual override"; persist();
+	}
 	function restore(): void {
+		observeManualSelection();
 		// A model change may clamp the baseline to the new model's capabilities.
 		apply(currentModel ? clampThinkingLevel(currentModel, controller.baseline) : controller.baseline);
 	}
@@ -60,6 +73,7 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 	}
 	function lastUser(ctx: ExtensionContext): unknown { return messages(ctx).filter((m: any) => m.role === "user").pop(); }
 	async function evaluate(ctx: ExtensionContext, incomingMessage?: unknown): Promise<void> {
+		observeManualSelection();
 		if (!controller.enabled || controller.paused || !ctx.model?.reasoning || configError) { status(ctx); return; }
 		cancel();
 		const revision = controller.revision;
@@ -94,7 +108,7 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 	}
 	async function initialize(ctx: ExtensionContext): Promise<void> {
 		cancel(); inputPending = false; initialUserPending = false; controller.paused = undefined;
-		currentModel = ctx.model; modelTransition = undefined;
+		currentModel = ctx.model; modelTransitions.length = 0; modelThinkingObserved = false;
 		controller.baseline = pi.getThinkingLevel(); observedLevel = controller.baseline;
 		try { config = await loadConfig(); configError = false; }
 		catch { config = { ...DEFAULT_CONFIG }; configError = true; notify(ctx, "Invalid adaptive reasoning config; disabled", "warning"); }
@@ -135,6 +149,7 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 		if (controller.enabled) { persist(); await evaluate(ctx, event.message); }
 	});
 	pi.on("turn_end", async (event, ctx) => {
+		observeManualSelection();
 		controller.finishGeneration(event.toolResults.filter((r) => r.isError).length);
 		if (!controller.enabled || controller.paused || !ctx.model?.reasoning) { status(ctx); return; }
 		const message = event.message as { stopReason?: string };
@@ -146,19 +161,29 @@ export default function adaptiveReasoningExtension(pi: ExtensionAPI): void {
 		if (!controller.canReuse()) await evaluate(ctx); else status(ctx);
 	});
 	pi.on("thinking_level_select", (event, ctx) => {
-		observedLevel = pi.getThinkingLevel();
 		const expected = controller.expectedTransitions.findIndex((t) => t.from === event.previousLevel && t.to === event.level);
 		if (expected !== -1) { controller.expectedTransitions.splice(expected, 1); return; }
-		if (ctx.model?.id !== currentModel?.id || ctx.model?.provider !== currentModel?.provider) { currentModel = ctx.model; cancel(); status(ctx); return; }
-		if (modelTransition?.from === event.previousLevel && modelTransition.to === event.level) { modelTransition = undefined; return; }
+		const modelExpected = modelTransitions.findIndex((t) => t.from === event.previousLevel && t.to === event.level);
+		if (modelExpected !== -1) { modelTransitions.splice(modelExpected, 1); return; }
+		if ((ctx.model?.id !== currentModel?.id || ctx.model?.provider !== currentModel?.provider) && !modelThinkingObserved) {
+			// Pi changes the model before emitting its automatic thinking change.
+			modelThinkingObserved = true; observedLevel = event.level; cancel(); status(ctx); return;
+		}
+		if (pi.getThinkingLevel() !== event.level) return;
+		observedLevel = event.level;
 		if (controller.select(event.level, event.previousLevel)) { request?.abort(); request = undefined; persist(); }
 		status(ctx);
 	});
 	pi.on("model_select", (_event, ctx) => {
 		const selectedLevel = pi.getThinkingLevel();
-		modelTransition = (currentModel?.id !== ctx.model?.id || currentModel?.provider !== ctx.model?.provider) && observedLevel !== selectedLevel ? { from: observedLevel, to: selectedLevel } : undefined;
+		if (!modelThinkingObserved && (currentModel?.id !== ctx.model?.id || currentModel?.provider !== ctx.model?.provider) && observedLevel !== selectedLevel) {
+			modelTransitions.push({ from: observedLevel, to: selectedLevel });
+		}
+		modelThinkingObserved = false;
 		observedLevel = selectedLevel;
-		currentModel = ctx.model; cancel(); if (controller.enabled) restore(); status(ctx);
+		currentModel = ctx.model; cancel();
+		// Pi has already applied scoped/per-model/default thinking for the new model.
+		controller.baseline = selectedLevel; persist(); status(ctx);
 	});
 	pi.on("session_compact", (_event, ctx) => { cancel(); inputPending = false; initialUserPending = false; if (controller.enabled) restore(); status(ctx); });
 	pi.on("session_tree", async (_event, ctx) => { await initialize(ctx); });

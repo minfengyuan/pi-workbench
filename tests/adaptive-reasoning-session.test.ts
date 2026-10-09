@@ -142,3 +142,128 @@ test("real AgentSession evaluates steering delivered during a tool before the ne
 	assert.deepEqual(h.order, ["evaluate:Initial task", "user:end", "prepare:high", "evaluate:Changed task", "user:end", "prepare:low"]);
 });
 
+test("real AgentSession captures each Pi model baseline across reasoning and non-reasoning round trips", async (t) => {
+	const h = await sessionHarness(t);
+	await h.session.setModel(getModel("openai", "gpt-5-mini"));
+	assert.equal(h.session.thinkingLevel, "low");
+	await h.session.prompt("Use the smaller model");
+	assert.deepEqual(h.reasoning, ["high"]);
+	assert.equal(h.session.thinkingLevel, "low");
+	await h.session.setModel(getModel("openai", "gpt-4o"));
+	assert.equal(h.session.thinkingLevel, "off");
+	await h.session.prompt("Use the non-reasoning model");
+	assert.equal(h.states.length, 1);
+	await h.session.setModel(getModel("openai", "gpt-5.4"));
+	assert.equal(h.session.thinkingLevel, "medium");
+	await h.session.prompt("Return to the original model");
+	assert.equal(h.states.length, 2);
+	assert.equal(h.session.thinkingLevel, "medium");
+	assert.equal(h.settings.getDefaultThinkingLevel(), "medium");
+	assert.equal(h.settings.getModelThinkingLevel("openai", "gpt-5-mini"), "low");
+});
+
+test("real AgentSession delayed model thinking event does not pause adaptation but a manual selection does", async (t) => {
+	let release!: () => void;
+	let delayed = false;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	t.after(() => release());
+	const h = await sessionHarness(t, { beforeExtension: (pi) => {
+		pi.on("thinking_level_select", async (event) => {
+			if (!delayed && event.previousLevel === "medium" && event.level === "low") { delayed = true; await gate; }
+		});
+	} });
+	await h.session.setModel(getModel("openai", "gpt-5-mini"));
+	assert.equal(delayed, true);
+	release();
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(h.session.thinkingLevel, "low");
+	await h.session.prompt("/adaptive-reasoning status");
+	const status = h.session.messages.filter((message) => message.role === "custom").at(-1);
+	assert.equal(status?.role, "custom");
+	assert.match(String(status?.content), /Baseline: low\nLease: 0\nPaused: no/);
+	h.tools(1, async () => {
+		h.session.setThinkingLevel("medium");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	});
+	await h.session.prompt("Check manual override");
+	assert.deepEqual(h.reasoning, ["high", "medium"]);
+	assert.equal(h.states.length, 1);
+	assert.equal(h.session.thinkingLevel, "medium");
+});
+
+test("real AgentSession preserves the final baseline after back-to-back models with delayed thinking events", async (t) => {
+	let release!: () => void;
+	let delayed = 0;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	t.after(() => release());
+	const h = await sessionHarness(t, { beforeExtension: (pi) => {
+		pi.on("thinking_level_select", async () => { delayed++; await gate; });
+	} });
+	await h.session.setModel(getModel("openai", "gpt-5-mini"));
+	await h.session.setModel(getModel("openai", "gpt-5.4"));
+	assert.equal(delayed, 2);
+	release();
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(h.session.thinkingLevel, "medium");
+	await h.session.prompt("/adaptive-reasoning status");
+	const status = h.session.messages.filter((message) => message.role === "custom").at(-1);
+	assert.match(String(status?.content), /Baseline: medium\nLease: 0\nPaused: no/);
+});
+
+test("real AgentSession preserves a manual choice whose thinking event arrives after settling", async (t) => {
+	let release!: () => void;
+	let delayed = false;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	t.after(() => release());
+	const h = await sessionHarness(t, { lease: 5, beforeExtension: (pi) => {
+		pi.on("thinking_level_select", async (event) => {
+			if (!delayed && event.previousLevel === "high" && event.level === "low") { delayed = true; await gate; }
+		});
+	} });
+	h.tools(1, async () => { h.session.setThinkingLevel("low"); });
+	await h.session.prompt("Keep my manual selection");
+	assert.equal(delayed, true);
+	assert.deepEqual(h.reasoning, ["high", "low"]);
+	assert.equal(h.states.length, 1);
+	assert.equal(h.session.thinkingLevel, "low");
+	release();
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(h.session.thinkingLevel, "low");
+	await h.session.prompt("/adaptive-reasoning status");
+	const status = h.session.messages.filter((message) => message.role === "custom").at(-1);
+	assert.match(String(status?.content), /Baseline: low\nLease: 0\nPaused: manual override/);
+	const persisted = h.session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "adaptive-reasoning").at(-1);
+	assert.equal((persisted?.type === "custom" ? persisted.data as { baseline: string } : undefined)?.baseline, "low");
+});
+
+test("real AgentSession does not let an already captured delayed manual event pause the next task", async (t) => {
+	let release!: () => void;
+	let delayed = false;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	t.after(() => release());
+	const h = await sessionHarness(t, { lease: 1, beforeExtension: (pi) => {
+		pi.on("thinking_level_select", async (event) => {
+			if (!delayed && event.previousLevel === "high" && event.level === "low") { delayed = true; await gate; }
+		});
+	} });
+	h.tools(1, async () => { h.session.setThinkingLevel("low"); });
+	await h.session.prompt("Choose a manual baseline");
+	assert.equal(delayed, true);
+	assert.equal(h.session.thinkingLevel, "low");
+	assert.equal(h.states.length, 1);
+	// The generation counter spans both prompts; generation three is the new task's tool turn.
+	h.tools(3, async () => {
+		release();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	});
+	await h.session.prompt("Resume adaptation with the same low effort");
+	assert.deepEqual(h.reasoning, ["high", "low", "low", "low"]);
+	assert.deepEqual(h.states.map((state) => [state.latestUserPrompt, state.step]), [
+		["Choose a manual baseline", 0],
+		["Resume adaptation with the same low effort", 0],
+		["Resume adaptation with the same low effort", 1],
+	]);
+	await h.session.prompt("/adaptive-reasoning status");
+	const status = h.session.messages.filter((message) => message.role === "custom").at(-1);
+	assert.match(String(status?.content), /Baseline: low\nLease: 0\nPaused: no/);
+});
