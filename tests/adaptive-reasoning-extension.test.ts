@@ -3,6 +3,7 @@ import test, { before, after } from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { countTokens } from "gpt-tokenizer/encoding/o200k_base";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import extension from "../extensions/adaptive-reasoning/index.ts";
@@ -189,4 +190,21 @@ test("evaluator history follows Pi's session projection, not raw branch entries"
 	assert.deepEqual(state.publicNotes, ["replacement note"]);
 	assert.equal(state.latestUserPrompt, "current goal");
 	for (const hidden of ["COMPACTED-AWAY", "OMITTED-SECRET", "REPLACED-ORIGINAL", "PRIVATE-THOUGHT", "summary"]) assert.equal(json.includes(hidden), false, hidden);
+});
+test("long sessions keep the evaluator working with a bounded request body", async (t) => {
+	const bodies: string[] = [];
+	t.mock.method(globalThis, "fetch", async (_url: string | URL | Request, init?: RequestInit) => { bodies.push(init?.body as string); return response("high", "1"); });
+	const h = harness();
+	for (let i = 0; i < 200; i++) {
+		h.entries.push({ type: "message", message: { role: "user", content: `prompt ${i} ${"detail ".repeat(1_500)}` } });
+		h.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "PRIVATE" }, { type: "text", text: `answer ${i} ${"public ".repeat(1_500)}` }] } });
+	}
+	h.entries.push({ type: "message", message: { role: "user", content: "final goal" } });
+	await h.run("session_start"); await h.run("before_agent_start", { prompt: "final goal" });
+	assert.equal(bodies.length, 1); assert.equal(h.level, "high");
+	const body = bodies[0], state = JSON.parse(body).state;
+	assert.ok(countTokens(body, { disallowedSpecial: new Set() }) <= 28_000);
+	assert.match(state.priorUserPrompts.at(-1), /^prompt 199 /); assert.match(state.publicNotes.at(-1), /^answer 199 /);
+	assert.ok(state.omittedOlderUserPrompts > 0 && state.omittedOlderPublicNotes > 0);
+	assert.equal(body.includes("PRIVATE"), false);
 });
